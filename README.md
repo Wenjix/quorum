@@ -44,6 +44,12 @@ Quorum currently has two layers.
 
 The cloud runner is explore-only today. It does not create commits, push branches, or open fix PRs.
 
+## Example Output
+
+Quorum posts one synthesis comment that groups automated-review findings into distinct issues, shows reviewer quorum, preserves links back to the original bot comments, and embeds machine-readable JSON for follow-up agents.
+
+![Screenshot of a Quorum review synthesis comment on GitHub, showing three automated-review findings grouped into distinct issues](docs/assets/quorum-synthesis.png)
+
 ## How It Works
 
 ```text
