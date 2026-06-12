@@ -197,6 +197,8 @@ Reruns update the existing exploration comment instead of spamming the PR.
 
 Quorum renders each run as a Cursor Canvas: a live React view showing run status, per-cluster task cards, agent links, and parsed results.
 
+![Screenshot of a Quorum exploration Canvas in Cursor, showing run status and per-cluster root-cause and pattern-sweep task cards for a six-task DAG](docs/assets/quorum-canvas-dag.png)
+
 Cursor only renders `.canvas.tsx` files as interactive Canvases when they live in the workspace's managed canvases directory:
 
 ```text
