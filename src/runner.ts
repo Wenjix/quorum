@@ -37,7 +37,7 @@ export async function runDag(
   const ranks = computeRanks(dag);
   const state = initialRunState(dag);
   const stateById = new Map(state.tasks.map((task) => [task.id, task]));
-  await writeState(context.outDir, state, context.canvasPath);
+  await writeState(context.outDir, state, context.canvasPath, context.canvasMirrorPath);
 
   for (const rank of ranks) {
     await mapWithConcurrency(rank, context.concurrency, async (task) => {
@@ -51,12 +51,12 @@ export async function runDag(
         taskState.finishedAt = Date.now();
         taskState.durationMs = 0;
         taskState.errorMessage = `Skipped because upstream task(s) failed: ${failedDeps.join(", ")}`;
-        await writeState(context.outDir, state, context.canvasPath);
+        await writeState(context.outDir, state, context.canvasPath, context.canvasMirrorPath);
         return;
       }
 
       await runOneTask(task, taskState, stateById, state, context, adapter);
-      await writeState(context.outDir, state, context.canvasPath);
+      await writeState(context.outDir, state, context.canvasPath, context.canvasMirrorPath);
     });
   }
 
@@ -67,7 +67,7 @@ export async function runDag(
     failed.length > 0
       ? `Some tasks failed or were skipped: ${failed.map((task) => task.id).join(", ")}`
       : "All tasks finished.";
-  await writeState(context.outDir, state, context.canvasPath);
+  await writeState(context.outDir, state, context.canvasPath, context.canvasMirrorPath);
   return state;
 }
 
@@ -75,11 +75,13 @@ export async function writeState(
   outDir: string,
   state: RunState,
   canvasPath?: string | false,
+  canvasMirrorPath?: string,
 ): Promise<void> {
   await mkdir(outDir, { recursive: true });
   await writeFile(join(outDir, "state.json"), JSON.stringify(state, null, 2), "utf8");
   if (canvasPath !== false) {
     await writeCanvas(canvasPath ?? canvasPathFromOutDir(outDir), state);
+    if (canvasMirrorPath) await writeCanvas(canvasMirrorPath, state);
   }
 }
 
@@ -94,7 +96,7 @@ async function runOneTask(
   const startedAt = Date.now();
   taskState.status = "RUNNING";
   taskState.startedAt = startedAt;
-  await writeState(context.outDir, state, context.canvasPath);
+  await writeState(context.outDir, state, context.canvasPath, context.canvasMirrorPath);
 
   const controller = new AbortController();
   const prompt = stitchPrompt(task, stateById);

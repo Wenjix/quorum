@@ -1,5 +1,7 @@
+import { existsSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
-import { dirname } from "node:path";
+import { homedir } from "node:os";
+import { dirname, join, resolve } from "node:path";
 import type { RunState, TaskState } from "./types.js";
 
 export const DEFAULT_CANVAS_FILE = "quorum-exploration.canvas.tsx";
@@ -7,6 +9,30 @@ export const DEFAULT_CANVAS_FILE = "quorum-exploration.canvas.tsx";
 export async function writeCanvas(canvasPath: string, state: RunState): Promise<void> {
   await mkdir(dirname(canvasPath), { recursive: true });
   await writeFile(canvasPath, renderCanvasSource(state), "utf8");
+}
+
+/** Canvas file name for a repo + PR, e.g. `quorum-node-to-self-pr12.canvas.tsx`. */
+export function canvasFileNameFor(repo: string, pr: string): string {
+  const repoName = repo.split("/").pop() || "run";
+  const safe = `${repoName}-pr${pr}`.replace(/[^A-Za-z0-9._-]+/g, "-");
+  return `quorum-${safe}.canvas.tsx`;
+}
+
+/**
+ * Path inside Cursor's managed canvases directory for the workspace, where
+ * `.canvas.tsx` files render as interactive Canvases. Cursor maps a workspace
+ * to `~/.cursor/projects/<path-with-slashes-as-dashes>/canvases/`. Returns
+ * undefined when the workspace has no Cursor project directory (i.e. it has
+ * never been opened in Cursor), in which case there is nowhere to mirror to.
+ */
+export function cursorCanvasMirrorPath(
+  fileName: string,
+  workspaceDir: string = process.cwd(),
+): string | undefined {
+  const slug = resolve(workspaceDir).replace(/^\/+/, "").replace(/[/\\]/g, "-");
+  const projectDir = join(homedir(), ".cursor", "projects", slug);
+  if (!existsSync(projectDir)) return undefined;
+  return join(projectDir, "canvases", fileName);
 }
 
 export function renderCanvasSource(state: RunState): string {
@@ -176,9 +202,13 @@ export default function QuorumCanvas() {
           <Stack gap={8}>
           <Row gap={6} align="center">
             {STATUS_ORDER.map((status) => (
-              <Pill key={status} tone={statusTone(status)} size="sm" active={counts[status] > 0}>
-                {status}: {counts[status]}
-              </Pill>
+              // key lives on a plain <div>: the canvas React type stubs do not
+              // accept key directly on cursor/canvas components.
+              <div key={status}>
+                <Pill tone={statusTone(status)} size="sm" active={counts[status] > 0}>
+                  {status}: {counts[status]}
+                </Pill>
+              </div>
             ))}
           </Row>
           {STATE.runMessage ? <Text size="small">{STATE.runMessage}</Text> : null}
@@ -189,14 +219,16 @@ export default function QuorumCanvas() {
       <Stack gap={12}>
         <H2>DAG Tasks</H2>
         {groups.map((group) => (
-          <Card key={group.clusterId}>
+          <div key={group.clusterId}>
+          <Card>
             <CardHeader trailing={<Pill tone="neutral" size="sm">{group.tasks.length} task(s)</Pill>}>
               {group.clusterId}
             </CardHeader>
             <CardBody>
               <Grid columns={2} gap={12}>
                 {group.tasks.map((task) => (
-                  <Card key={task.id}>
+                  <div key={task.id}>
+                  <Card>
                     <CardHeader trailing={<Pill tone={statusTone(task.status)} size="sm" active>{task.status}</Pill>}>
                       {task.id}
                     </CardHeader>
@@ -221,10 +253,12 @@ export default function QuorumCanvas() {
                       </Stack>
                     </CardBody>
                   </Card>
+                  </div>
                 ))}
               </Grid>
             </CardBody>
           </Card>
+          </div>
         ))}
       </Stack>
     </Stack>

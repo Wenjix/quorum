@@ -91,6 +91,8 @@ export interface RunnerContext {
   prUrl?: string;
   outDir: string;
   canvasPath?: string | false;
+  /** Extra copy of the canvas inside Cursor's managed canvases directory. */
+  canvasMirrorPath?: string;
   apiKey?: string;
   concurrency: number;
   taskTimeoutMs: number;

@@ -1,7 +1,12 @@
 #!/usr/bin/env node
 import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
-import { canvasPathFromOutDir, writeCanvas } from "./canvas.js";
+import { basename, dirname, join } from "node:path";
+import {
+  canvasFileNameFor,
+  canvasPathFromOutDir,
+  cursorCanvasMirrorPath,
+  writeCanvas,
+} from "./canvas.js";
 import { parseClusterIds, parseScoredClusters, selectClusters } from "./clusters.js";
 import { CursorCloudAdapter } from "./cursor-cloud-adapter.js";
 import { parseDag } from "./dag.js";
@@ -64,19 +69,20 @@ async function explore(parsed: ParsedArgs): Promise<void> {
 
   let state = initialRunState(dag);
   const canvasPath = canvasPathFor(parsed, outDir);
+  const canvasMirrorPath = canvasMirrorPathFor(parsed, canvasPath, repo, pr);
   if (hasFlag(parsed, "plan-only")) {
-    await writeState(outDir, state, canvasPath);
+    await writeState(outDir, state, canvasPath, canvasMirrorPath);
   } else {
     state = await runDag(
       dag,
-      runnerContext(parsed, repo, pr, repoUrl, prUrl, outDir, canvasPath),
+      runnerContext(parsed, repo, pr, repoUrl, prUrl, outDir, canvasPath, canvasMirrorPath),
       new CursorCloudAdapter(),
     );
   }
 
   const context = explorationContext(repo, pr, repoUrl, prUrl, runId);
   await writeReportArtifacts(outDir, context, scoredDoc, selected, state);
-  if (canvasPath) console.log(`canvas ${canvasPath}`);
+  logCanvasPaths(canvasPath, canvasMirrorPath);
 
   const noPost = hasFlag(parsed, "no-post") || hasFlag(parsed, "dry-run") || hasFlag(parsed, "plan-only");
   if (!noPost) {
@@ -100,16 +106,17 @@ async function runDagCommand(parsed: ParsedArgs): Promise<void> {
   await mkdir(outDir, { recursive: true });
   await writeJson(join(outDir, "dag.json"), dag);
   const canvasPath = canvasPathFor(parsed, outDir);
+  const canvasMirrorPath = canvasMirrorPathFor(parsed, canvasPath, repo, pr);
 
   const state = hasFlag(parsed, "plan-only")
     ? initialRunState(dag)
     : await runDag(
         dag,
-        runnerContext(parsed, repo, pr, repoUrl, prUrl, outDir, canvasPath),
+        runnerContext(parsed, repo, pr, repoUrl, prUrl, outDir, canvasPath, canvasMirrorPath),
         new CursorCloudAdapter(),
       );
-  if (hasFlag(parsed, "plan-only")) await writeState(outDir, state, canvasPath);
-  if (canvasPath) console.log(`canvas ${canvasPath}`);
+  if (hasFlag(parsed, "plan-only")) await writeState(outDir, state, canvasPath, canvasMirrorPath);
+  logCanvasPaths(canvasPath, canvasMirrorPath);
   console.log(`wrote ${outDir}`);
 }
 
@@ -118,7 +125,11 @@ async function renderCanvasCommand(parsed: ParsedArgs): Promise<void> {
   const state = (await readJson(statePath)) as ReturnType<typeof initialRunState>;
   const outPath = flag(parsed, "canvas-path") ?? join(dirname(statePath), "quorum-exploration.canvas.tsx");
   await writeCanvas(outPath, state);
-  console.log(`canvas ${outPath}`);
+  const mirrorPath = hasFlag(parsed, "no-canvas-mirror")
+    ? undefined
+    : cursorCanvasMirrorPath(basename(outPath));
+  if (mirrorPath) await writeCanvas(mirrorPath, state);
+  logCanvasPaths(outPath, mirrorPath);
 }
 
 async function writeReportArtifacts(
@@ -142,6 +153,7 @@ function runnerContext(
   prUrl: string | undefined,
   outDir: string,
   canvasPath: string | false,
+  canvasMirrorPath: string | undefined,
 ): RunnerContext {
   return {
     repo,
@@ -150,6 +162,7 @@ function runnerContext(
     prUrl,
     outDir,
     canvasPath,
+    canvasMirrorPath,
     apiKey: flag(parsed, "api-key") ?? process.env.CURSOR_API_KEY,
     concurrency: numberFlag(parsed, "concurrency", 4),
     taskTimeoutMs: numberFlag(parsed, "task-timeout-ms", 20 * 60 * 1000),
@@ -160,6 +173,21 @@ function runnerContext(
 function canvasPathFor(parsed: ParsedArgs, outDir: string): string | false {
   if (hasFlag(parsed, "no-canvas")) return false;
   return flag(parsed, "canvas-path") ?? canvasPathFromOutDir(outDir);
+}
+
+function canvasMirrorPathFor(
+  parsed: ParsedArgs,
+  canvasPath: string | false,
+  repo: string,
+  pr: string,
+): string | undefined {
+  if (canvasPath === false || hasFlag(parsed, "no-canvas-mirror")) return undefined;
+  return cursorCanvasMirrorPath(canvasFileNameFor(repo, pr));
+}
+
+function logCanvasPaths(canvasPath: string | false, canvasMirrorPath?: string): void {
+  if (canvasPath) console.log(`canvas ${canvasPath}`);
+  if (canvasMirrorPath) console.log(`canvas (Cursor) ${canvasMirrorPath}`);
 }
 
 function explorationContext(
@@ -266,6 +294,7 @@ Options:
   --no-stream              Do not consume run.stream(); wait for final result only.
   --canvas-path PATH       Write a Cursor Canvas artifact to this path.
   --no-canvas              Do not write the .canvas.tsx artifact.
+  --no-canvas-mirror       Do not mirror the canvas into ~/.cursor/projects/<workspace>/canvases/.
 `);
 }
 
