@@ -1,0 +1,25 @@
+{
+  "name": "quorum",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "description": "Quorum review synthesis plus Cursor Cloud exploration DAG runner.",
+  "bin": {
+    "quorum-cloud": "./dist/src/cli.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "npm run build && node --test dist/test/*.test.js",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "@cursor/sdk": "^1.0.18"
+  },
+  "devDependencies": {
+    "@types/node": "^25.0.0",
+    "typescript": "^6.0.3"
+  }
+}
