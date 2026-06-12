@@ -88,6 +88,14 @@ npm install
 npm run build
 ```
 
+For the shortest local commands, link the CLI once:
+
+```bash
+npm link
+```
+
+After that, use `quorum ...` from any directory. Without `npm link`, replace `quorum` with `node dist/src/cli.js` from this repo.
+
 Run tests:
 
 ```bash
@@ -118,7 +126,7 @@ Then open an agent session on a PR branch and ask:
 Use Quorum to triage the bot reviews on this PR.
 ```
 
-The skill produces a `clusters.scored.json` file. That file is the input to the Phase 2 cloud runner.
+The skill posts a Quorum synthesis comment that embeds `clusters.scored.json`. The Phase 2 runner can recover that JSON from the PR automatically, so you usually do not need to pass a local `--scored` path.
 
 ## Use the Cursor Cloud Runner
 
@@ -128,33 +136,38 @@ First set your Cursor API key:
 export CURSOR_API_KEY="crsr_..."
 ```
 
-Generate the exploration DAG and report shell without making Cursor Cloud or GitHub calls:
+Generate the exploration DAG, report shell, and Canvas without making Cursor Cloud calls:
 
 ```bash
-node dist/src/cli.js explore \
-  --repo OWNER/REPO \
-  --pr 123 \
-  --scored path/to/clusters.scored.json \
-  --plan-only
+quorum plan-pr https://github.com/OWNER/REPO/pull/123
 ```
 
 Run live Cursor Cloud exploration but do not post to GitHub:
 
 ```bash
-node dist/src/cli.js explore \
-  --repo OWNER/REPO \
-  --pr 123 \
-  --scored path/to/clusters.scored.json \
-  --no-post
+quorum run-pr https://github.com/OWNER/REPO/pull/123
 ```
 
 Run live exploration and upsert the PR exploration comment:
 
 ```bash
-node dist/src/cli.js explore \
+quorum post-pr https://github.com/OWNER/REPO/pull/123
+```
+
+Open or regenerate a Canvas from an existing run:
+
+```bash
+quorum canvas .quorum/runs/<run-id>
+```
+
+Advanced/debug mode is still available:
+
+```bash
+quorum explore \
   --repo OWNER/REPO \
   --pr 123 \
-  --scored path/to/clusters.scored.json
+  --scored path/to/clusters.scored.json \
+  --no-post
 ```
 
 Useful options:
@@ -163,10 +176,12 @@ Useful options:
 --cluster ID[,ID]        Explore specific cluster IDs.
 --min-quorum N           Default: 2.
 --max-clusters N         Limit selected clusters.
+--scored PATH            Use a local clusters.scored.json instead of PR recovery.
 --out DIR                Write artifacts to a custom directory.
 --concurrency N          Default: 4.
 --task-timeout-ms N      Default: 1200000.
 --dry-run | --no-post    Do not write a PR comment.
+--post                   For run-pr only: post the exploration comment after running.
 --plan-only              Do not call Cursor Cloud or GitHub.
 --no-stream              Wait for final agent results only.
 --canvas-path PATH       Write the Cursor Canvas artifact to this path.
@@ -176,7 +191,7 @@ Useful options:
 
 ## Outputs
 
-Each run writes artifacts under `.quorum/runs/<timestamp>-pr<N>/` by default.
+Each shortcut run writes artifacts under `.quorum/runs/<repo>-pr<N>-<timestamp>/` by default.
 
 - `input.clusters.scored.json`: the Quorum synthesis input
 - `dag.json`: the exploration graph
@@ -219,7 +234,7 @@ Click the `canvas (Cursor)` path in Cursor to open it beside the chat. The mirro
 You can also re-render a Canvas from a saved run without re-running anything:
 
 ```bash
-node dist/src/cli.js render-canvas --state .quorum/runs/<run-id>/state.json
+quorum canvas .quorum/runs/<run-id>
 ```
 
 ## Safety Defaults

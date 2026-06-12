@@ -11,14 +11,26 @@ import { parseClusterIds, parseScoredClusters, selectClusters } from "./clusters
 import { CursorCloudAdapter } from "./cursor-cloud-adapter.js";
 import { parseDag } from "./dag.js";
 import { upsertExplorationComment } from "./github.js";
+import { parsePullRequestRef, repoSlug } from "./pr.js";
 import { buildExplorationDag } from "./prompts.js";
 import { buildExplorationReport, renderExplorationMarkdown } from "./report.js";
 import { initialRunState, runDag, writeState } from "./runner.js";
+import { recoverScoredClustersFromPullRequest } from "./synthesis.js";
 import type { Dag, ExplorationContext, RunnerContext, ScoredClustersDoc } from "./types.js";
 
 interface ParsedArgs {
   command?: string;
+  positionals: string[];
   flags: Map<string, string[]>;
+}
+
+interface ExploreExecutionOptions {
+  repo: string;
+  pr: string;
+  scoredDoc: ScoredClustersDoc;
+  parsed: ParsedArgs;
+  planOnly: boolean;
+  post: boolean;
 }
 
 async function main(): Promise<void> {
@@ -32,12 +44,28 @@ async function main(): Promise<void> {
     await explore(parsed);
     return;
   }
+  if (parsed.command === "plan-pr") {
+    await prShortcutCommand(parsed, { planOnly: true, post: false });
+    return;
+  }
+  if (parsed.command === "run-pr") {
+    await prShortcutCommand(parsed, { planOnly: false, post: hasFlag(parsed, "post") });
+    return;
+  }
+  if (parsed.command === "post-pr") {
+    await prShortcutCommand(parsed, { planOnly: false, post: true });
+    return;
+  }
   if (parsed.command === "run-dag") {
     await runDagCommand(parsed);
     return;
   }
   if (parsed.command === "render-canvas") {
     await renderCanvasCommand(parsed);
+    return;
+  }
+  if (parsed.command === "canvas") {
+    await canvasCommand(parsed);
     return;
   }
   throw new Error(`Unknown command: ${parsed.command}`);
@@ -48,6 +76,29 @@ async function explore(parsed: ParsedArgs): Promise<void> {
   const pr = requiredFlag(parsed, "pr");
   const scoredPath = requiredFlag(parsed, "scored");
   const scoredDoc = parseScoredClusters(await readJson(scoredPath));
+  const planOnly = hasFlag(parsed, "plan-only");
+  const post = !(hasFlag(parsed, "no-post") || hasFlag(parsed, "dry-run") || planOnly);
+  await executeExplore({ repo, pr, scoredDoc, parsed, planOnly, post });
+}
+
+async function prShortcutCommand(
+  parsed: ParsedArgs,
+  mode: { planOnly: boolean; post: boolean },
+): Promise<void> {
+  const ref = parsePullRequestRef(requiredPositional(parsed, "PR_URL"));
+  const scoredDoc = await scoredDocFor(parsed, ref.repo, ref.pr);
+  await executeExplore({
+    repo: ref.repo,
+    pr: ref.pr,
+    scoredDoc,
+    parsed,
+    planOnly: mode.planOnly,
+    post: mode.post,
+  });
+}
+
+async function executeExplore(options: ExploreExecutionOptions): Promise<void> {
+  const { repo, pr, scoredDoc, parsed, planOnly, post } = options;
   const selected = selectClusters(scoredDoc, {
     clusterIds: parseClusterIds(flagValues(parsed, "cluster")),
     minQuorum: numberFlag(parsed, "min-quorum", 2),
@@ -57,7 +108,7 @@ async function explore(parsed: ParsedArgs): Promise<void> {
     throw new Error("No clusters selected. Lower --min-quorum or pass --cluster.");
   }
 
-  const runId = createRunId(pr);
+  const runId = createRunId(repo, pr);
   const outDir = flag(parsed, "out") ?? join(".quorum", "runs", runId);
   const repoUrl = flag(parsed, "repo-url") ?? `https://github.com/${repo}`;
   const prUrl = flag(parsed, "pr-url") ?? `https://github.com/${repo}/pull/${pr}`;
@@ -84,14 +135,27 @@ async function explore(parsed: ParsedArgs): Promise<void> {
   await writeReportArtifacts(outDir, context, scoredDoc, selected, state);
   logCanvasPaths(canvasPath, canvasMirrorPath);
 
-  const noPost = hasFlag(parsed, "no-post") || hasFlag(parsed, "dry-run") || hasFlag(parsed, "plan-only");
-  if (!noPost) {
+  if (post) {
     const markdown = await readFile(join(outDir, "exploration.md"), "utf8");
     const result = await upsertExplorationComment(repo, pr, markdown);
     console.log(`PR comment ${result.action}${result.commentId ? `: ${result.commentId}` : ""}`);
   }
 
   console.log(`wrote ${outDir}`);
+}
+
+async function scoredDocFor(
+  parsed: ParsedArgs,
+  repo: string,
+  pr: string,
+): Promise<ScoredClustersDoc> {
+  const scoredPath = flag(parsed, "scored");
+  if (scoredPath) {
+    return parseScoredClusters(await readJson(scoredPath));
+  }
+
+  console.log(`recovering Quorum synthesis from ${repo}#${pr}`);
+  return await recoverScoredClustersFromPullRequest(repo, pr);
 }
 
 async function runDagCommand(parsed: ParsedArgs): Promise<void> {
@@ -122,6 +186,16 @@ async function runDagCommand(parsed: ParsedArgs): Promise<void> {
 
 async function renderCanvasCommand(parsed: ParsedArgs): Promise<void> {
   const statePath = requiredFlag(parsed, "state");
+  await renderCanvasFromStatePath(parsed, statePath);
+}
+
+async function canvasCommand(parsed: ParsedArgs): Promise<void> {
+  const target = requiredPositional(parsed, "RUN_DIR_OR_STATE_JSON");
+  const statePath = target.endsWith(".json") ? target : join(target, "state.json");
+  await renderCanvasFromStatePath(parsed, statePath);
+}
+
+async function renderCanvasFromStatePath(parsed: ParsedArgs, statePath: string): Promise<void> {
   const state = (await readJson(statePath)) as ReturnType<typeof initialRunState>;
   const outPath = flag(parsed, "canvas-path") ?? join(dirname(statePath), "quorum-exploration.canvas.tsx");
   await writeCanvas(outPath, state);
@@ -215,10 +289,12 @@ function parseArgs(argv: string[]): ParsedArgs {
     rest = argv;
   }
   const flags = new Map<string, string[]>();
+  const positionals: string[] = [];
   for (let i = 0; i < rest.length; i++) {
     const arg = rest[i];
     if (!arg.startsWith("--")) {
-      throw new Error(`Unexpected positional argument: ${arg}`);
+      positionals.push(arg);
+      continue;
     }
     const key = arg.slice(2);
     const next = rest[i + 1];
@@ -226,7 +302,7 @@ function parseArgs(argv: string[]): ParsedArgs {
     if (value !== "true") i++;
     flags.set(key, [...(flags.get(key) ?? []), value]);
   }
-  return { command, flags };
+  return { command, positionals, flags };
 }
 
 function flag(parsed: ParsedArgs, name: string): string | undefined {
@@ -244,6 +320,12 @@ function hasFlag(parsed: ParsedArgs, name: string): boolean {
 function requiredFlag(parsed: ParsedArgs, name: string): string {
   const value = flag(parsed, name);
   if (!value || value === "true") throw new Error(`Missing --${name}.`);
+  return value;
+}
+
+function requiredPositional(parsed: ParsedArgs, label: string): string {
+  const value = parsed.positionals[0];
+  if (!value) throw new Error(`Missing ${label}.`);
   return value;
 }
 
@@ -269,22 +351,28 @@ async function writeJson(path: string, value: unknown): Promise<void> {
   await writeFile(path, `${JSON.stringify(value, null, 2)}\n`, "utf8");
 }
 
-function createRunId(pr: string): string {
+function createRunId(repo: string, pr: string): string {
   const ts = new Date().toISOString().replace(/[:.]/g, "-");
-  return `${ts}-pr${pr}`;
+  return `${repoSlug(repo)}-pr${pr}-${ts}`;
 }
 
 function printHelp(): void {
   console.log(`Usage:
-  quorum-cloud explore --repo OWNER/REPO --pr N --scored clusters.scored.json [options]
-  quorum-cloud run-dag --dag dag.json --out .quorum/runs/run-id --repo OWNER/REPO [options]
-  quorum-cloud render-canvas --state .quorum/runs/run-id/state.json [--canvas-path PATH]
+  quorum plan-pr https://github.com/OWNER/REPO/pull/N [options]
+  quorum run-pr https://github.com/OWNER/REPO/pull/N [options]
+  quorum post-pr https://github.com/OWNER/REPO/pull/N [options]
+  quorum canvas .quorum/runs/run-id
+  quorum explore --repo OWNER/REPO --pr N --scored clusters.scored.json [options]
+  quorum run-dag --dag dag.json --out .quorum/runs/run-id --repo OWNER/REPO [options]
+  quorum render-canvas --state .quorum/runs/run-id/state.json [--canvas-path PATH]
 
 Options:
   --cluster ID[,ID]        Explore explicit cluster IDs instead of quorum filter.
   --min-quorum N           Default: 2.
   --max-clusters N         Limit selected clusters.
-  --out DIR                Output directory. Default: .quorum/runs/<timestamp>-pr<N>.
+  --scored PATH            Use a local clusters.scored.json instead of recovering it from the PR.
+  --out DIR                Output directory. Default: .quorum/runs/<repo>-pr<N>-<timestamp>.
+  --post                   For run-pr only: upsert the PR exploration comment after the run.
   --repo-url URL           Default: https://github.com/OWNER/REPO.
   --pr-url URL             Default: https://github.com/OWNER/REPO/pull/N.
   --concurrency N          Default: 4.

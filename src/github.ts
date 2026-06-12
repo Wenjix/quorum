@@ -59,7 +59,7 @@ async function findExistingComment(repo: string, pr: string): Promise<number | u
   return undefined;
 }
 
-async function gh(args: string[], input?: string): Promise<string> {
+export async function runGh(args: string[], input?: string): Promise<string> {
   return await new Promise((resolve, reject) => {
     const child = spawn("gh", args, {
       stdio: ["pipe", "pipe", "pipe"],
@@ -86,3 +86,5 @@ async function gh(args: string[], input?: string): Promise<string> {
     child.stdin.end();
   });
 }
+
+const gh = runGh;

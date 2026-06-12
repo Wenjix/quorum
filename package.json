@@ -5,6 +5,7 @@
   "type": "module",
   "description": "Quorum review synthesis plus Cursor Cloud exploration DAG runner.",
   "bin": {
+    "quorum": "./dist/src/cli.js",
     "quorum-cloud": "./dist/src/cli.js"
   },
   "scripts": {

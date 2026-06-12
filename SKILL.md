@@ -1,6 +1,6 @@
 ---
 name: quorum
-description: Synthesize, deduplicate, and prioritize automated code-review findings on a GitHub pull request. Use whenever the user mentions Bugbot, Copilot code review, Devin reviewer, CodeRabbit or other review bots, bot review triage, duplicate or noisy review comments, reviewer consensus or quorum, or asks to summarize, dedupe, cluster, rank, or synthesize automated PR feedback — even if they don't name a specific tool or say "Quorum". Fetches bot review comments via gh, clusters same-root-cause findings using the bundled rubric, computes per-cluster reviewer quorum deterministically, and posts one idempotent synthesis comment with machine-readable JSON for downstream agents.
+description: Synthesize, deduplicate, prioritize, and explore automated code-review findings on GitHub pull requests. Use whenever the user mentions Bugbot, Copilot code review, Devin reviewer, CodeRabbit or other review bots, bot review triage, duplicate or noisy review comments, reviewer consensus or quorum, Quorum DAG exploration, Cursor Cloud root-cause analysis, pattern sweeps, or asks to summarize, dedupe, cluster, rank, synthesize, or explore automated PR feedback — even if they do not name a specific tool. Fetches bot review comments via gh, clusters same-root-cause findings, computes reviewer quorum deterministically, posts one idempotent synthesis comment with machine-readable JSON, and can launch the Quorum Cloud DAG runner for root-cause and pattern-sweep follow-up.
 ---
 
 # Quorum — bot review synthesis
@@ -76,8 +76,28 @@ To post for real, drop `--dry-run`. The script:
 Summarize in conversation: findings → clusters, quorum tiers, the top finding. Then offer the natural next actions:
 
 1. **Fix now** — implement fixes for quorum ≥ 2 clusters in this session.
-2. **Pattern sweep** — search the repo for other instances of the top cluster's root-cause pattern (this is the highest-leverage follow-up; none of the individual bots do it).
+2. **Cloud DAG exploration** — run Cursor Cloud root-cause and pattern-sweep agents with `quorum run-pr PR_URL` (or `quorum plan-pr PR_URL` first for a no-cloud dry plan).
 3. **Log the run** for the eval flywheel (below).
+
+## Phase 2 — Cloud DAG shortcuts
+
+If the repo has this Quorum CLI built and linked, prefer the shortcut commands over hand-writing the long `explore --repo --pr --scored` form.
+
+```bash
+quorum plan-pr https://github.com/OWNER/REPO/pull/N
+quorum run-pr https://github.com/OWNER/REPO/pull/N
+quorum post-pr https://github.com/OWNER/REPO/pull/N
+quorum canvas .quorum/runs/<run-id>
+```
+
+- `plan-pr` recovers the embedded `clusters.scored.json` from the existing `<!-- quorum:synthesis -->` PR comment, writes the DAG/report/Canvas, and does not call Cursor Cloud.
+- `run-pr` runs the Cursor Cloud DAG and writes local artifacts/Canvas, but does not post an exploration comment by default.
+- `post-pr` runs the DAG and upserts the PR exploration comment.
+- Add `--scored path/to/clusters.scored.json` if no synthesis comment exists yet or the user has a local scored file.
+- Add `--min-quorum 1` when testing on PRs where all findings are single-reviewer findings.
+- Run `quorum canvas .quorum/runs/<run-id>` to regenerate/open the Canvas for an existing run without rerunning cloud agents.
+
+If `quorum` is not on PATH but this repo is checked out, use `node dist/src/cli.js` in place of `quorum` from the Quorum repo root. If the command says no synthesis comment was found, run Steps 1-4 first or pass `--scored`.
 
 ## Dogfood logging (recommended)
 
