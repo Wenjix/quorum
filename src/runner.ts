@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { canvasPathFromOutDir, writeCanvas } from "./canvas.js";
 import { computeRanks, createModelResolver } from "./dag.js";
 import { extractMarkedJson } from "./json-result.js";
+import { logTaskEvent, logRunStart, logRunEnd } from "./logging.js";
 import type {
   Dag,
   DagTask,
@@ -37,6 +38,7 @@ export async function runDag(
   const ranks = computeRanks(dag);
   const state = initialRunState(dag);
   const stateById = new Map(state.tasks.map((task) => [task.id, task]));
+  await logRunStart(context.outDir, state);
   await writeState(context.outDir, state, context.canvasPath, context.canvasMirrorPath);
 
   for (const rank of ranks) {
@@ -67,6 +69,7 @@ export async function runDag(
     failed.length > 0
       ? `Some tasks failed or were skipped: ${failed.map((task) => task.id).join(", ")}`
       : "All tasks finished.";
+  await logRunEnd(context.outDir, state);
   await writeState(context.outDir, state, context.canvasPath, context.canvasMirrorPath);
   return state;
 }
@@ -97,6 +100,7 @@ async function runOneTask(
   taskState.status = "RUNNING";
   taskState.startedAt = startedAt;
   await writeState(context.outDir, state, context.canvasPath, context.canvasMirrorPath);
+  await logTaskEvent(context.outDir, taskState);
 
   const controller = new AbortController();
   const prompt = stitchPrompt(task, stateById);
@@ -125,6 +129,7 @@ async function runOneTask(
   } finally {
     taskState.finishedAt = Date.now();
     taskState.durationMs = taskState.finishedAt - startedAt;
+    await logTaskEvent(context.outDir, taskState);
   }
 }
 

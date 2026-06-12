@@ -1,6 +1,9 @@
 #!/usr/bin/env node
+import { execFile } from "node:child_process";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
+import { promisify } from "node:util";
+import { AnthropicAdapter } from "./adapters/anthropic.js";
 import {
   canvasFileNameFor,
   canvasPathFromOutDir,
@@ -11,12 +14,22 @@ import { parseClusterIds, parseScoredClusters, selectClusters } from "./clusters
 import { CursorCloudAdapter } from "./cursor-cloud-adapter.js";
 import { parseDag } from "./dag.js";
 import { upsertExplorationComment } from "./github.js";
+import { loadRunLogs } from "./logging.js";
+import type { LogEntry } from "./logging.js";
 import { parsePullRequestRef, repoSlug } from "./pr.js";
 import { buildExplorationDag } from "./prompts.js";
 import { buildExplorationReport, renderExplorationMarkdown } from "./report.js";
 import { initialRunState, runDag, writeState } from "./runner.js";
 import { recoverScoredClustersFromPullRequest } from "./synthesis.js";
-import type { Dag, ExplorationContext, RunnerContext, ScoredClustersDoc } from "./types.js";
+import type {
+  Dag,
+  ExplorationContext,
+  RunnerContext,
+  ScoredClustersDoc,
+  TaskRunnerAdapter,
+} from "./types.js";
+
+const execFileAsync = promisify(execFile);
 
 interface ParsedArgs {
   command?: string;
@@ -66,6 +79,22 @@ async function main(): Promise<void> {
   }
   if (parsed.command === "canvas") {
     await canvasCommand(parsed);
+    return;
+  }
+  if (parsed.command === "synthesize") {
+    await synthesizeCommand(parsed);
+    return;
+  }
+  if (parsed.command === "triage-pr") {
+    await triagePrCommand(parsed);
+    return;
+  }
+  if (parsed.command === "setup") {
+    await setupCommand();
+    return;
+  }
+  if (parsed.command === "eval") {
+    await evalCommand(parsed);
     return;
   }
   throw new Error(`Unknown command: ${parsed.command}`);
@@ -127,7 +156,7 @@ async function executeExplore(options: ExploreExecutionOptions): Promise<void> {
     state = await runDag(
       dag,
       runnerContext(parsed, repo, pr, repoUrl, prUrl, outDir, canvasPath, canvasMirrorPath),
-      new CursorCloudAdapter(),
+      resolveAdapter(parsed),
     );
   }
 
@@ -177,7 +206,7 @@ async function runDagCommand(parsed: ParsedArgs): Promise<void> {
     : await runDag(
         dag,
         runnerContext(parsed, repo, pr, repoUrl, prUrl, outDir, canvasPath, canvasMirrorPath),
-        new CursorCloudAdapter(),
+        resolveAdapter(parsed),
       );
   if (hasFlag(parsed, "plan-only")) await writeState(outDir, state, canvasPath, canvasMirrorPath);
   logCanvasPaths(canvasPath, canvasMirrorPath);
@@ -229,6 +258,9 @@ function runnerContext(
   canvasPath: string | false,
   canvasMirrorPath: string | undefined,
 ): RunnerContext {
+  const provider = flag(parsed, "provider") ?? process.env.QUORUM_PROVIDER ?? "cursor";
+  const apiKey = flag(parsed, "api-key")
+    ?? (provider === "anthropic" ? process.env.ANTHROPIC_API_KEY : process.env.CURSOR_API_KEY);
   return {
     repo,
     pr,
@@ -237,11 +269,19 @@ function runnerContext(
     outDir,
     canvasPath,
     canvasMirrorPath,
-    apiKey: flag(parsed, "api-key") ?? process.env.CURSOR_API_KEY,
+    apiKey,
     concurrency: numberFlag(parsed, "concurrency", 4),
     taskTimeoutMs: numberFlag(parsed, "task-timeout-ms", 20 * 60 * 1000),
-    stream: !hasFlag(parsed, "no-stream"),
+    stream: !hasFlag(parsed, "no-stream") && provider === "cursor",
   };
+}
+
+function resolveAdapter(parsed: ParsedArgs): TaskRunnerAdapter {
+  const provider = flag(parsed, "provider") ?? process.env.QUORUM_PROVIDER ?? "cursor";
+  if (provider === "anthropic") {
+    return new AnthropicAdapter();
+  }
+  return new CursorCloudAdapter();
 }
 
 function canvasPathFor(parsed: ParsedArgs, outDir: string): string | false {
@@ -279,6 +319,309 @@ function explorationContext(
     runId,
     generatedAt: new Date().toISOString(),
   };
+}
+
+// ---- synthesize command ----
+
+async function synthesizeCommand(parsed: ParsedArgs): Promise<void> {
+  const ref = parsePullRequestRef(requiredPositional(parsed, "OWNER/REPO#PR or PR_URL"));
+  const outDir = flag(parsed, "out") ?? join(".quorum", "synthesis", `${repoSlug(ref.repo)}-pr${ref.pr}`);
+
+  const findingsPath = flag(parsed, "findings") ?? join(outDir, "findings.json");
+  const clustersPath = flag(parsed, "clusters") ?? join(outDir, "clusters.json");
+  const scoredPath = flag(parsed, "out-file") ?? join(outDir, "clusters.scored.json");
+
+  await mkdir(outDir, { recursive: true });
+
+  // Step 1: Fetch findings
+  console.log(`Fetching findings for ${ref.repo}#${ref.pr}...`);
+  try {
+    await execFileAsync("bash", [
+      join(repoScriptsDir(), "fetch_findings.sh"),
+      ref.repo,
+      ref.pr,
+      findingsPath,
+    ]);
+  } catch {
+    throw new Error("Failed to fetch findings. Ensure gh CLI is authenticated and jq is installed.");
+  }
+
+  const findings = await readJson(findingsPath);
+  if (!Array.isArray(findings) || findings.length === 0) {
+    throw new Error("No bot findings found. Run the Quorum skill for clustering, or check QUORUM_BOTS.");
+  }
+
+  // If user provided clusters.json, use it; otherwise generate all-singletons
+  let clustersExists = false;
+  try {
+    await readFile(clustersPath);
+    clustersExists = true;
+  } catch { /* file doesn't exist */ }
+
+  if (!clustersExists) {
+    console.log("No clusters.json provided; generating all-singletons clustering.");
+    await generateSingletonClusters(findings, clustersPath);
+  }
+
+  // Step 3: Validate & score
+  console.log("Validating and scoring...");
+  try {
+    await execFileAsync("python3", [
+      join(repoScriptsDir(), "validate_partition.py"),
+      findingsPath,
+      clustersPath,
+      "-o",
+      scoredPath,
+    ]);
+  } catch (error) {
+    const err = error as { stderr?: string; message?: string };
+    console.error(err.stderr || err.message || String(error));
+    throw new Error("Validation failed. Fix clusters.json or re-run with all-singletons.");
+  }
+
+  console.log(`wrote ${scoredPath}`);
+
+  // Step 4: Post (or dry-run)
+  const dryRun = hasFlag(parsed, "dry-run");
+  const args = ["python3", join(repoScriptsDir(), "post_synthesis.py"), ref.repo, ref.pr, scoredPath];
+  if (dryRun) args.push("--dry-run");
+  if (hasFlag(parsed, "minimize")) args.push("--minimize");
+  if (hasFlag(parsed, "no-reactions")) args.push("--no-reactions");
+
+  try {
+    const { stdout, stderr } = await execFileAsync("python3", args.slice(1));
+    if (dryRun) {
+      console.log(stdout);
+      if (stderr) console.error(stderr);
+    } else {
+      console.log(stdout.trim());
+    }
+  } catch (error) {
+    const err = error as { stderr?: string; message?: string };
+    console.error(err.stderr || err.message || String(error));
+    throw new Error("post_synthesis.py failed.");
+  }
+}
+
+async function generateSingletonClusters(findings: unknown[], outPath: string): Promise<void> {
+  const clusters = (findings as Array<Record<string, unknown>>).map((finding: Record<string, unknown>) => {
+    const lines = (finding.lines as [number | null, number | null]) ?? [null, null];
+    return {
+      cluster_id: `${finding.id}-solo`,
+      member_ids: [finding.id],
+      canonical_title: firstLine(String(finding.body ?? "No description")),
+      canonical_description: firstLine(String(finding.body ?? "No description"), 240),
+      category: "other",
+      severity: "minor",
+      primary_location: {
+        file: finding.file,
+        start_line: lines[0],
+        end_line: lines[1],
+      },
+      match_type: "singleton",
+      match_confidence: 1.0,
+      cross_file: false,
+    };
+  });
+  await writeJson(outPath, { clusters });
+}
+
+function firstLine(text: string, limit = 80): string {
+  for (const line of (text || "").trim().split("\n")) {
+    const cleaned = line.trim().replace(/^[#*>\-\s]+/, "").trim();
+    if (cleaned) return cleaned.slice(0, limit);
+  }
+  return "(no comment text)";
+}
+
+// ---- triage-pr command ----
+
+async function triagePrCommand(parsed: ParsedArgs): Promise<void> {
+  const ref = parsePullRequestRef(requiredPositional(parsed, "PR_URL"));
+  const tmpDir = join(".quorum", "triage", `${repoSlug(ref.repo)}-pr${ref.pr}`);
+  const scoredPath = join(tmpDir, "clusters.scored.json");
+
+  // Step 1: Synthesize
+  console.log("=== Phase 1: Synthesis ===");
+  const synthParsed = cloneParsedWith(parsed, {
+    out: flag(parsed, "synth-out") ?? tmpDir,
+    "out-file": scoredPath,
+  });
+  await synthesizeCommand(synthParsed);
+
+  // Step 2: Explore
+  console.log("\n=== Phase 2: Exploration ===");
+  const runId = createRunId(ref.repo, ref.pr);
+  const outDir = flag(parsed, "out") ?? join(".quorum", "runs", runId);
+  const scoredDoc = parseScoredClusters(await readJson(scoredPath));
+  await executeExplore({
+    repo: ref.repo,
+    pr: ref.pr,
+    scoredDoc,
+    parsed,
+    planOnly: hasFlag(parsed, "plan-only"),
+    post: !hasFlag(parsed, "no-post") && !hasFlag(parsed, "dry-run"),
+  });
+}
+
+function cloneParsedWith(parsed: ParsedArgs, overrides: Record<string, string>): ParsedArgs {
+  const cloned = new Map(parsed.flags);
+  for (const [key, value] of Object.entries(overrides)) {
+    cloned.set(key, [value]);
+  }
+  return { command: parsed.command, positionals: [...parsed.positionals], flags: cloned };
+}
+
+// ---- setup command ----
+
+async function setupCommand(): Promise<void> {
+  const checks: Array<{ name: string; ok: boolean; help: string }> = [];
+
+  // Node
+  const nodeVersion = process.versions.node;
+  const nodeOk = parseInt(nodeVersion.split(".")[0], 10) >= 22;
+  checks.push({
+    name: `Node.js >= 22 (found ${nodeVersion})`,
+    ok: nodeOk,
+    help: "Install Node.js 22+ from https://nodejs.org",
+  });
+
+  // gh CLI
+  try {
+    await execFileAsync("gh", ["--version"]);
+    checks.push({ name: "gh CLI", ok: true, help: "" });
+  } catch {
+    checks.push({ name: "gh CLI", ok: false, help: "Install from https://cli.github.com" });
+  }
+
+  // jq
+  try {
+    await execFileAsync("jq", ["--version"]);
+    checks.push({ name: "jq", ok: true, help: "" });
+  } catch {
+    checks.push({ name: "jq", ok: false, help: "Install with brew install jq or apt install jq" });
+  }
+
+  // python3
+  try {
+    await execFileAsync("python3", ["--version"]);
+    checks.push({ name: "python3", ok: true, help: "" });
+  } catch {
+    checks.push({ name: "python3", ok: false, help: "Install from https://python.org" });
+  }
+
+  // API keys
+  const cursorKey = !!process.env.CURSOR_API_KEY;
+  const anthropicKey = !!process.env.ANTHROPIC_API_KEY;
+  const githubToken = !!process.env.GITHUB_TOKEN || !!process.env.GH_TOKEN;
+  checks.push({
+    name: `CURSOR_API_KEY (${cursorKey ? "set" : "not set"})`,
+    ok: cursorKey || anthropicKey,
+    help: "Set CURSOR_API_KEY for Cursor Cloud or ANTHROPIC_API_KEY for Anthropic",
+  });
+  checks.push({
+    name: `GITHUB_TOKEN (${githubToken ? "set" : "not set"})`,
+    ok: githubToken,
+    help: "Set GITHUB_TOKEN for direct GitHub API access (falls back to gh CLI)",
+  });
+
+  // Skill installation
+  const home = process.env.HOME || process.env.USERPROFILE || "~";
+  const cursorSkillDir = ".cursor/skills/quorum";
+  const claudeSkillDir = ".claude/skills/quorum";
+  const hasCursorSkill = await dirExists(join(home, cursorSkillDir));
+  const hasClaudeSkill = await dirExists(join(home, claudeSkillDir));
+  checks.push({
+    name: `Cursor skill (${hasCursorSkill ? "installed" : "not installed"})`,
+    ok: hasCursorSkill || hasClaudeSkill,
+    help: `Run: mkdir -p ${cursorSkillDir} && unzip quorum.skill -d ${cursorSkillDir}`,
+  });
+
+  console.log("Quorum Setup Check\n");
+  let allOk = true;
+  for (const check of checks) {
+    const icon = check.ok ? "PASS" : "FAIL";
+    console.log(`  [${icon}] ${check.name}`);
+    if (!check.ok) {
+      allOk = false;
+      console.log(`        -> ${check.help}`);
+    }
+  }
+
+  if (allOk) {
+    console.log("\nAll checks passed. Quorum is ready to use.");
+  } else {
+    console.log("\nFix the FAIL items above, then re-run 'quorum setup'.");
+    process.exit(1);
+  }
+}
+
+async function dirExists(path: string): Promise<boolean> {
+  try {
+    const stat = await import("node:fs/promises").then((fs) => fs.stat(path));
+    return stat.isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+// ---- eval command ----
+
+async function evalCommand(parsed: ParsedArgs): Promise<void> {
+  const logDir = flag(parsed, "log-dir") ?? join(".quorum", "log");
+  const entries = await loadRunLogs(logDir);
+
+  if (entries.length === 0) {
+    console.log("No run logs found in", logDir);
+    console.log("Run some explorations first to populate the log.");
+    return;
+  }
+
+  const runs = new Map<string, LogEntry[]>();
+  for (const entry of entries) {
+    const key = entry.runTitle ?? "unknown";
+    if (!runs.has(key)) runs.set(key, []);
+    runs.get(key)!.push(entry);
+  }
+
+  console.log(`Eval Report — ${runs.size} run(s), ${entries.length} event(s)\n`);
+
+  // Task success rate
+  const tasks = entries.filter((e) => e.type === "task_end" || e.type === "task_error" || e.type === "task_skip");
+  const finished = tasks.filter((e) => e.type === "task_end" && e.status === "FINISHED").length;
+  const errors = tasks.filter((e) => e.type === "task_error" || e.status === "ERROR").length;
+  const skipped = tasks.filter((e) => e.type === "task_skip").length;
+
+  console.log("## Task Outcomes");
+  console.log(`  Total tasks: ${tasks.length}`);
+  console.log(`  Finished: ${finished} (${tasks.length ? ((finished / tasks.length) * 100).toFixed(0) : 0}%)`);
+  console.log(`  Errors: ${errors}`);
+  console.log(`  Skipped: ${skipped}`);
+  console.log("");
+
+  // Cluster-level stats
+  const rootCauseTasks = entries.filter((e) => e.taskType === "root_cause");
+  const sweepTasks = entries.filter((e) => e.taskType === "pattern_sweep");
+  const clusterIds = new Set([...rootCauseTasks, ...sweepTasks].map((e) => e.clusterId).filter(Boolean));
+  console.log(`## Clusters Explored: ${clusterIds.size}`);
+
+  // Average duration
+  const durations = entries
+    .filter((e) => e.durationMs !== undefined && e.durationMs > 0)
+    .map((e) => e.durationMs!);
+  if (durations.length > 0) {
+    const avg = durations.reduce((a, b) => a + b, 0) / durations.length;
+    console.log(`  Average task duration: ${(avg / 1000).toFixed(1)}s`);
+  }
+
+  console.log("");
+  console.log("## Runs");
+  for (const [title, runEntries] of runs) {
+    const dagStart = runEntries.find((e) => e.type === "dag_start");
+    const dagEnd = runEntries.find((e) => e.type === "dag_end");
+    const status = dagEnd?.status ?? "unknown";
+    console.log(`  ${title}: ${status} (${runEntries.length} events)`);
+  }
 }
 
 function parseArgs(argv: string[]): ParsedArgs {
@@ -356,33 +699,66 @@ function createRunId(repo: string, pr: string): string {
   return `${repoSlug(repo)}-pr${pr}-${ts}`;
 }
 
+function repoScriptsDir(): string {
+  // When installed as npm package or running from source, scripts are in <package>/scripts/.
+  // cli.js lives at dist/src/cli.js, so go up 3 dirs: dist/src -> dist -> <pkgRoot>.
+  const url = import.meta.url;
+  if (url.startsWith("file://")) {
+    const filePath = url.replace("file://", "");
+    return join(dirname(dirname(dirname(filePath))), "scripts");
+  }
+  return join(process.cwd(), "scripts");
+}
+
 function printHelp(): void {
   console.log(`Usage:
+  quorum synthesize OWNER/REPO#PR [options]
+  quorum triage-pr https://github.com/OWNER/REPO/pull/N [options]
   quorum plan-pr https://github.com/OWNER/REPO/pull/N [options]
   quorum run-pr https://github.com/OWNER/REPO/pull/N [options]
   quorum post-pr https://github.com/OWNER/REPO/pull/N [options]
   quorum canvas .quorum/runs/run-id
+  quorum setup
+  quorum eval [--log-dir .quorum/log]
   quorum explore --repo OWNER/REPO --pr N --scored clusters.scored.json [options]
   quorum run-dag --dag dag.json --out .quorum/runs/run-id --repo OWNER/REPO [options]
-  quorum render-canvas --state .quorum/runs/run-id/state.json [--canvas-path PATH]
+
+Commands:
+  synthesize          Run Phase 1 synthesis pipeline (fetch, score, post) without AI clustering.
+  triage-pr           Run synthesis + exploration end-to-end on a PR.
+  plan-pr             Generate DAG/Canvas without calling cloud agents.
+  run-pr              Run Cursor Cloud or Anthropic exploration (no PR comment by default).
+  post-pr             Run exploration and upsert the PR exploration comment.
+  canvas              Regenerate or open a Canvas from a saved run directory.
+  setup               Validate prerequisites (Node, gh, jq, python3, API keys, skills).
+  eval                Compute reviewer precision and success stats from run logs.
 
 Options:
-  --cluster ID[,ID]        Explore explicit cluster IDs instead of quorum filter.
-  --min-quorum N           Default: 2.
-  --max-clusters N         Limit selected clusters.
-  --scored PATH            Use a local clusters.scored.json instead of recovering it from the PR.
-  --out DIR                Output directory. Default: .quorum/runs/<repo>-pr<N>-<timestamp>.
-  --post                   For run-pr only: upsert the PR exploration comment after the run.
-  --repo-url URL           Default: https://github.com/OWNER/REPO.
-  --pr-url URL             Default: https://github.com/OWNER/REPO/pull/N.
-  --concurrency N          Default: 4.
-  --task-timeout-ms N      Default: 1200000.
-  --dry-run | --no-post    Run cloud exploration but do not write a PR comment.
-  --plan-only              Generate DAG/state/report shell without Cursor Cloud or GitHub calls.
-  --no-stream              Do not consume run.stream(); wait for final result only.
-  --canvas-path PATH       Write a Cursor Canvas artifact to this path.
-  --no-canvas              Do not write the .canvas.tsx artifact.
-  --no-canvas-mirror       Do not mirror the canvas into ~/.cursor/projects/<workspace>/canvases/.
+  --provider cursor|anthropic  Backend for exploration agents. Default: cursor.
+  --cluster ID[,ID]            Explore explicit cluster IDs instead of quorum filter.
+  --min-quorum N               Default: 2.
+  --max-clusters N             Limit selected clusters.
+  --scored PATH                Use a local clusters.scored.json.
+  --out DIR                    Output directory.
+  --post                       For run-pr only: upsert the PR exploration comment.
+  --concurrency N              Default: 4.
+  --task-timeout-ms N          Default: 1200000.
+  --dry-run | --no-post        Do not write a PR comment.
+  --plan-only                  Generate DAG/state/report without cloud or GitHub calls.
+  --no-stream                  Disable streaming (only supported for Cursor provider).
+  --canvas-path PATH           Custom Canvas artifact path.
+  --no-canvas                  Skip Canvas generation.
+  --no-canvas-mirror           Skip mirroring into Cursor canvases dir.
+  --api-key KEY                Override the default API key for the selected provider.
+
+Environment:
+  CURSOR_API_KEY               Cursor Cloud API key.
+  ANTHROPIC_API_KEY            Anthropic API key (required for --provider anthropic).
+  GITHUB_TOKEN                 GitHub API token (falls back to gh CLI).
+  QUORUM_PROVIDER              Default: cursor. Set to anthropic for direct Anthropic API.
+  QUORUM_MODEL_HIGH            Model for HIGH complexity tasks.
+  QUORUM_MODEL_MED             Model for MED complexity tasks.
+  QUORUM_MODEL_LOW             Model for LOW complexity tasks.
 `);
 }
 

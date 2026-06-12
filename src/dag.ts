@@ -6,7 +6,34 @@ export const DEFAULT_MODEL_MAP: Record<Complexity, string> = {
   LOW: "auto-low",
 };
 
+const MODEL_ENV_VARS: Record<Complexity, string> = {
+  HIGH: "QUORUM_MODEL_HIGH",
+  MED: "QUORUM_MODEL_MED",
+  LOW: "QUORUM_MODEL_LOW",
+};
+
 const COMPLEXITIES = new Set<Complexity>(["HIGH", "MED", "LOW"]);
+
+/** Build the effective model map: env vars > config file > DAG overrides > defaults. */
+export function resolveModelMap(
+  overrides: Partial<Record<Complexity, string>> | undefined,
+): Record<Complexity, string> {
+  const models = { ...DEFAULT_MODEL_MAP };
+  for (const level of COMPLEXITIES) {
+    const envValue = process.env[MODEL_ENV_VARS[level]];
+    if (envValue?.trim()) {
+      models[level] = envValue.trim();
+    }
+  }
+  if (overrides) {
+    for (const level of COMPLEXITIES) {
+      if (overrides[level]?.trim()) {
+        models[level] = overrides[level].trim();
+      }
+    }
+  }
+  return models;
+}
 
 export function parseDag(raw: unknown): Dag {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
@@ -108,7 +135,7 @@ export function computeRanks(dag: Dag): DagTask[][] {
 export function createModelResolver(
   overrides: Partial<Record<Complexity, string>> | undefined,
 ): (complexity: Complexity) => string {
-  const models = { ...DEFAULT_MODEL_MAP, ...(overrides ?? {}) };
+  const models = resolveModelMap(overrides);
   return (complexity) => models[complexity];
 }
 
