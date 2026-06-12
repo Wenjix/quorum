@@ -41,6 +41,7 @@ Quorum currently has two layers.
    - Selects quorum-backed findings, by default `quorum >= 2`.
    - Runs a small DAG of Cursor Cloud agents for each selected cluster.
    - Produces root-cause analysis, pattern-sweep results, local artifacts, and an optional PR comment.
+   - Renders a live-updating Cursor Canvas of the DAG while agents run.
 
 The cloud runner is explore-only today. It does not create commits, push branches, or open fix PRs.
 
@@ -170,6 +171,7 @@ Useful options:
 --no-stream              Wait for final agent results only.
 --canvas-path PATH       Write the Cursor Canvas artifact to this path.
 --no-canvas              Skip Canvas generation.
+--no-canvas-mirror       Skip mirroring the Canvas into Cursor's managed canvases directory.
 ```
 
 ## Outputs
@@ -183,8 +185,6 @@ Each run writes artifacts under `.quorum/runs/<timestamp>-pr<N>/` by default.
 - `exploration.md`: human-readable report
 - `quorum-exploration.canvas.tsx`: Cursor Canvas artifact for visual DAG status and task summaries
 
-Open the `.canvas.tsx` file in Cursor to view the DAG as an interactive Canvas. During a live run, Quorum rewrites the file whenever task state changes, so Cursor can refresh the task cards as root-cause and pattern-sweep agents finish.
-
 When posting is enabled, Quorum upserts one PR comment using the hidden marker:
 
 ```html
@@ -192,6 +192,33 @@ When posting is enabled, Quorum upserts one PR comment using the hidden marker:
 ```
 
 Reruns update the existing exploration comment instead of spamming the PR.
+
+## Cursor Canvas Integration
+
+Quorum renders each run as a Cursor Canvas: a live React view showing run status, per-cluster task cards, agent links, and parsed results.
+
+Cursor only renders `.canvas.tsx` files as interactive Canvases when they live in the workspace's managed canvases directory:
+
+```text
+~/.cursor/projects/<workspace-slug>/canvases/
+```
+
+So in addition to the copy in the run's output directory, Quorum automatically mirrors the Canvas there as `quorum-<repo>-pr<N>.canvas.tsx` (for example `quorum-node-to-self-pr12.canvas.tsx`). The CLI prints both paths:
+
+```text
+canvas .quorum/runs/<run-id>/quorum-exploration.canvas.tsx
+canvas (Cursor) ~/.cursor/projects/<workspace-slug>/canvases/quorum-node-to-self-pr12.canvas.tsx
+```
+
+Click the `canvas (Cursor)` path in Cursor to open it beside the chat. The mirror is skipped when the workspace has never been opened in Cursor, or when `--no-canvas-mirror` or `--no-canvas` is passed.
+
+**Live-updating DAG.** Quorum rewrites both Canvas copies on every task state change — task start, finish, error, and skip — so the Canvas updates in place while root-cause and pattern-sweep agents run: status pills flip from `PENDING` to `RUNNING` to `FINISHED`, durations fill in, and result summaries appear as each agent completes.
+
+You can also re-render a Canvas from a saved run without re-running anything:
+
+```bash
+node dist/src/cli.js render-canvas --state .quorum/runs/<run-id>/state.json
+```
 
 ## Safety Defaults
 
