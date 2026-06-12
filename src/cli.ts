@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { canvasPathFromOutDir, writeCanvas } from "./canvas.js";
 import { parseClusterIds, parseScoredClusters, selectClusters } from "./clusters.js";
 import { CursorCloudAdapter } from "./cursor-cloud-adapter.js";
 import { parseDag } from "./dag.js";
@@ -28,6 +29,10 @@ async function main(): Promise<void> {
   }
   if (parsed.command === "run-dag") {
     await runDagCommand(parsed);
+    return;
+  }
+  if (parsed.command === "render-canvas") {
+    await renderCanvasCommand(parsed);
     return;
   }
   throw new Error(`Unknown command: ${parsed.command}`);
@@ -58,14 +63,20 @@ async function explore(parsed: ParsedArgs): Promise<void> {
   await writeJson(join(outDir, "dag.json"), dag);
 
   let state = initialRunState(dag);
+  const canvasPath = canvasPathFor(parsed, outDir);
   if (hasFlag(parsed, "plan-only")) {
-    await writeState(outDir, state);
+    await writeState(outDir, state, canvasPath);
   } else {
-    state = await runDag(dag, runnerContext(parsed, repo, pr, repoUrl, prUrl, outDir), new CursorCloudAdapter());
+    state = await runDag(
+      dag,
+      runnerContext(parsed, repo, pr, repoUrl, prUrl, outDir, canvasPath),
+      new CursorCloudAdapter(),
+    );
   }
 
   const context = explorationContext(repo, pr, repoUrl, prUrl, runId);
   await writeReportArtifacts(outDir, context, scoredDoc, selected, state);
+  if (canvasPath) console.log(`canvas ${canvasPath}`);
 
   const noPost = hasFlag(parsed, "no-post") || hasFlag(parsed, "dry-run") || hasFlag(parsed, "plan-only");
   if (!noPost) {
@@ -88,12 +99,26 @@ async function runDagCommand(parsed: ParsedArgs): Promise<void> {
   const dag = parseDag(await readJson(dagPath));
   await mkdir(outDir, { recursive: true });
   await writeJson(join(outDir, "dag.json"), dag);
+  const canvasPath = canvasPathFor(parsed, outDir);
 
   const state = hasFlag(parsed, "plan-only")
     ? initialRunState(dag)
-    : await runDag(dag, runnerContext(parsed, repo, pr, repoUrl, prUrl, outDir), new CursorCloudAdapter());
-  if (hasFlag(parsed, "plan-only")) await writeState(outDir, state);
+    : await runDag(
+        dag,
+        runnerContext(parsed, repo, pr, repoUrl, prUrl, outDir, canvasPath),
+        new CursorCloudAdapter(),
+      );
+  if (hasFlag(parsed, "plan-only")) await writeState(outDir, state, canvasPath);
+  if (canvasPath) console.log(`canvas ${canvasPath}`);
   console.log(`wrote ${outDir}`);
+}
+
+async function renderCanvasCommand(parsed: ParsedArgs): Promise<void> {
+  const statePath = requiredFlag(parsed, "state");
+  const state = (await readJson(statePath)) as ReturnType<typeof initialRunState>;
+  const outPath = flag(parsed, "canvas-path") ?? join(dirname(statePath), "quorum-exploration.canvas.tsx");
+  await writeCanvas(outPath, state);
+  console.log(`canvas ${outPath}`);
 }
 
 async function writeReportArtifacts(
@@ -116,6 +141,7 @@ function runnerContext(
   repoUrl: string,
   prUrl: string | undefined,
   outDir: string,
+  canvasPath: string | false,
 ): RunnerContext {
   return {
     repo,
@@ -123,11 +149,17 @@ function runnerContext(
     repoUrl,
     prUrl,
     outDir,
+    canvasPath,
     apiKey: flag(parsed, "api-key") ?? process.env.CURSOR_API_KEY,
     concurrency: numberFlag(parsed, "concurrency", 4),
     taskTimeoutMs: numberFlag(parsed, "task-timeout-ms", 20 * 60 * 1000),
     stream: !hasFlag(parsed, "no-stream"),
   };
+}
+
+function canvasPathFor(parsed: ParsedArgs, outDir: string): string | false {
+  if (hasFlag(parsed, "no-canvas")) return false;
+  return flag(parsed, "canvas-path") ?? canvasPathFromOutDir(outDir);
 }
 
 function explorationContext(
@@ -218,6 +250,7 @@ function printHelp(): void {
   console.log(`Usage:
   quorum-cloud explore --repo OWNER/REPO --pr N --scored clusters.scored.json [options]
   quorum-cloud run-dag --dag dag.json --out .quorum/runs/run-id --repo OWNER/REPO [options]
+  quorum-cloud render-canvas --state .quorum/runs/run-id/state.json [--canvas-path PATH]
 
 Options:
   --cluster ID[,ID]        Explore explicit cluster IDs instead of quorum filter.
@@ -231,6 +264,8 @@ Options:
   --dry-run | --no-post    Run cloud exploration but do not write a PR comment.
   --plan-only              Generate DAG/state/report shell without Cursor Cloud or GitHub calls.
   --no-stream              Do not consume run.stream(); wait for final result only.
+  --canvas-path PATH       Write a Cursor Canvas artifact to this path.
+  --no-canvas              Do not write the .canvas.tsx artifact.
 `);
 }
 

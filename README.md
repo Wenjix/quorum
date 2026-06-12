@@ -67,7 +67,7 @@ Cloud exploration DAG
   root cause -> pattern sweep -> report
         |
         v
-exploration.md + exploration.json + optional PR comment
+exploration.md + exploration.json + Canvas + optional PR comment
 ```
 
 ## Quick Start
@@ -168,6 +168,8 @@ Useful options:
 --dry-run | --no-post    Do not write a PR comment.
 --plan-only              Do not call Cursor Cloud or GitHub.
 --no-stream              Wait for final agent results only.
+--canvas-path PATH       Write the Cursor Canvas artifact to this path.
+--no-canvas              Skip Canvas generation.
 ```
 
 ## Outputs
@@ -179,6 +181,9 @@ Each run writes artifacts under `.quorum/runs/<timestamp>-pr<N>/` by default.
 - `state.json`: task status, model, run ID, agent ID, errors, and parsed results
 - `exploration.json`: structured root-cause and pattern-sweep output
 - `exploration.md`: human-readable report
+- `quorum-exploration.canvas.tsx`: Cursor Canvas artifact for visual DAG status and task summaries
+
+Open the `.canvas.tsx` file in Cursor to view the DAG as an interactive Canvas. During a live run, Quorum rewrites the file whenever task state changes, so Cursor can refresh the task cards as root-cause and pattern-sweep agents finish.
 
 When posting is enabled, Quorum upserts one PR comment using the hidden marker:
 
@@ -213,6 +218,7 @@ Key source modules:
 - `src/cli.ts`: command-line interface
 - `src/dag.ts`: DAG validation and rank computation
 - `src/runner.ts`: task execution and state persistence
+- `src/canvas.ts`: Cursor Canvas rendering
 - `src/cursor-cloud-adapter.ts`: Cursor SDK integration
 - `src/report.ts`: JSON and Markdown exploration reports
 - `src/github.ts`: idempotent PR comment upsert

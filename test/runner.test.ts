@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
-import { mkdtemp } from "node:fs/promises";
+import { mkdtemp, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import ts from "typescript";
 import { parseDag } from "../src/dag.js";
 import { runDag } from "../src/runner.js";
 import { FakeAdapter, markedResult } from "./helpers.js";
@@ -30,6 +31,36 @@ test("runDag stitches upstream output and stores parsed task results", async () 
   assert.match(adapter.prompts.get("child") ?? "", /Upstream task results/);
   assert.match(adapter.prompts.get("child") ?? "", /root summary/);
   assert.ok(state.tasks[0].parsedResult);
+});
+
+test("runDag writes a Cursor Canvas artifact by default", async () => {
+  const dag = parseDag({
+    title: "canvas demo",
+    tasks: [{ id: "root", depends_on: [], complexity: "LOW", subtask_prompt: "root prompt" }],
+  });
+  const outDir = await mkdtemp(join(tmpdir(), "quorum-runner-"));
+  await runDag(
+    dag,
+    context(outDir),
+    new FakeAdapter({
+      root: { status: "finished", resultText: markedResult("root_cause"), runId: "run-root" },
+    }),
+  );
+
+  const canvas = await readFile(join(outDir, "quorum-exploration.canvas.tsx"), "utf8");
+  assert.match(canvas, /cursor\/canvas/);
+  assert.match(canvas, /canvas demo/);
+  assert.match(canvas, /root/);
+  assert.match(canvas, /FINISHED/);
+  const transpiled = ts.transpileModule(canvas, {
+    compilerOptions: {
+      jsx: ts.JsxEmit.ReactJSX,
+      module: ts.ModuleKind.ESNext,
+      target: ts.ScriptTarget.ES2022,
+    },
+    reportDiagnostics: true,
+  });
+  assert.deepEqual(transpiled.diagnostics ?? [], []);
 });
 
 test("runDag skips dependents when a parent fails", async () => {

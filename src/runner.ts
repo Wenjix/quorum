@@ -1,5 +1,6 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { canvasPathFromOutDir, writeCanvas } from "./canvas.js";
 import { computeRanks, createModelResolver } from "./dag.js";
 import { extractMarkedJson } from "./json-result.js";
 import type {
@@ -36,7 +37,7 @@ export async function runDag(
   const ranks = computeRanks(dag);
   const state = initialRunState(dag);
   const stateById = new Map(state.tasks.map((task) => [task.id, task]));
-  await writeState(context.outDir, state);
+  await writeState(context.outDir, state, context.canvasPath);
 
   for (const rank of ranks) {
     await mapWithConcurrency(rank, context.concurrency, async (task) => {
@@ -50,12 +51,12 @@ export async function runDag(
         taskState.finishedAt = Date.now();
         taskState.durationMs = 0;
         taskState.errorMessage = `Skipped because upstream task(s) failed: ${failedDeps.join(", ")}`;
-        await writeState(context.outDir, state);
+        await writeState(context.outDir, state, context.canvasPath);
         return;
       }
 
       await runOneTask(task, taskState, stateById, state, context, adapter);
-      await writeState(context.outDir, state);
+      await writeState(context.outDir, state, context.canvasPath);
     });
   }
 
@@ -66,13 +67,20 @@ export async function runDag(
     failed.length > 0
       ? `Some tasks failed or were skipped: ${failed.map((task) => task.id).join(", ")}`
       : "All tasks finished.";
-  await writeState(context.outDir, state);
+  await writeState(context.outDir, state, context.canvasPath);
   return state;
 }
 
-export async function writeState(outDir: string, state: RunState): Promise<void> {
+export async function writeState(
+  outDir: string,
+  state: RunState,
+  canvasPath?: string | false,
+): Promise<void> {
   await mkdir(outDir, { recursive: true });
   await writeFile(join(outDir, "state.json"), JSON.stringify(state, null, 2), "utf8");
+  if (canvasPath !== false) {
+    await writeCanvas(canvasPath ?? canvasPathFromOutDir(outDir), state);
+  }
 }
 
 async function runOneTask(
@@ -86,7 +94,7 @@ async function runOneTask(
   const startedAt = Date.now();
   taskState.status = "RUNNING";
   taskState.startedAt = startedAt;
-  await writeState(context.outDir, state);
+  await writeState(context.outDir, state, context.canvasPath);
 
   const controller = new AbortController();
   const prompt = stitchPrompt(task, stateById);

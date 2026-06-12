@@ -90,6 +90,7 @@ export interface RunnerContext {
   repoUrl: string;
   prUrl?: string;
   outDir: string;
+  canvasPath?: string | false;
   apiKey?: string;
   concurrency: number;
   taskTimeoutMs: number;
