@@ -1,12 +1,58 @@
 import type { Complexity, Dag, DagTask } from "./types.js";
 
-export const DEFAULT_MODEL_MAP: Record<Complexity, string> = {
+export type Provider = "cursor" | "anthropic";
+
+export const CURSOR_DEFAULT_MODELS: Record<Complexity, string> = {
   HIGH: "gpt-5.3-codex",
-  MED: "composer-2",
-  LOW: "auto-low",
+  MED: "composer-2.5",
+  LOW: "composer-2.5",
+};
+
+export const ANTHROPIC_DEFAULT_MODELS: Record<Complexity, string> = {
+  HIGH: "claude-opus-4-8",
+  MED: "claude-sonnet-4-6",
+  LOW: "claude-haiku-4-5",
+};
+
+export function defaultModelsFor(provider: Provider): Record<Complexity, string> {
+  return provider === "anthropic" ? ANTHROPIC_DEFAULT_MODELS : CURSOR_DEFAULT_MODELS;
+}
+
+const MODEL_ENV_VARS: Record<Complexity, string> = {
+  HIGH: "QUORUM_MODEL_HIGH",
+  MED: "QUORUM_MODEL_MED",
+  LOW: "QUORUM_MODEL_LOW",
 };
 
 const COMPLEXITIES = new Set<Complexity>(["HIGH", "MED", "LOW"]);
+
+/**
+ * Build the effective model map for a given provider.
+ * Precedence: env vars > DAG overrides > provider defaults.
+ * Env vars always win so users can override models in saved dag.json files.
+ */
+export function resolveModelMap(
+  overrides: Partial<Record<Complexity, string>> | undefined,
+  provider: Provider = "cursor",
+): Record<Complexity, string> {
+  const models = { ...defaultModelsFor(provider) };
+  // Apply DAG overrides first (they layer on top of provider defaults)
+  if (overrides) {
+    for (const level of COMPLEXITIES) {
+      if (overrides[level]?.trim()) {
+        models[level] = overrides[level].trim();
+      }
+    }
+  }
+  // Env vars are applied last so they always win
+  for (const level of COMPLEXITIES) {
+    const envValue = process.env[MODEL_ENV_VARS[level]];
+    if (envValue?.trim()) {
+      models[level] = envValue.trim();
+    }
+  }
+  return models;
+}
 
 export function parseDag(raw: unknown): Dag {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
@@ -107,8 +153,9 @@ export function computeRanks(dag: Dag): DagTask[][] {
 
 export function createModelResolver(
   overrides: Partial<Record<Complexity, string>> | undefined,
+  provider: Provider = "cursor",
 ): (complexity: Complexity) => string {
-  const models = { ...DEFAULT_MODEL_MAP, ...(overrides ?? {}) };
+  const models = resolveModelMap(overrides, provider);
   return (complexity) => models[complexity];
 }
 

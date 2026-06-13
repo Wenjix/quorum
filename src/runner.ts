@@ -2,7 +2,9 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { canvasPathFromOutDir, writeCanvas } from "./canvas.js";
 import { computeRanks, createModelResolver } from "./dag.js";
+import type { Provider } from "./dag.js";
 import { extractMarkedJson } from "./json-result.js";
+import { logTaskEvent, logRunStart, logRunEnd } from "./logging.js";
 import type {
   Dag,
   DagTask,
@@ -15,8 +17,8 @@ import type {
 
 const UPSTREAM_SNIPPET_CAP = 2_000;
 
-export function initialRunState(dag: Dag): RunState {
-  const modelFor = createModelResolver(dag.models);
+export function initialRunState(dag: Dag, provider: Provider = "cursor"): RunState {
+  const modelFor = createModelResolver(dag.models, provider);
   return {
     title: dag.title,
     startedAt: Date.now(),
@@ -35,8 +37,9 @@ export async function runDag(
 ): Promise<RunState> {
   await mkdir(context.outDir, { recursive: true });
   const ranks = computeRanks(dag);
-  const state = initialRunState(dag);
+  const state = initialRunState(dag, context.provider ?? "cursor");
   const stateById = new Map(state.tasks.map((task) => [task.id, task]));
+  await logRunStart(context.outDir, state);
   await writeState(context.outDir, state, context.canvasPath, context.canvasMirrorPath);
 
   for (const rank of ranks) {
@@ -51,6 +54,7 @@ export async function runDag(
         taskState.finishedAt = Date.now();
         taskState.durationMs = 0;
         taskState.errorMessage = `Skipped because upstream task(s) failed: ${failedDeps.join(", ")}`;
+        await logTaskEvent(context.outDir, taskState);
         await writeState(context.outDir, state, context.canvasPath, context.canvasMirrorPath);
         return;
       }
@@ -67,6 +71,7 @@ export async function runDag(
     failed.length > 0
       ? `Some tasks failed or were skipped: ${failed.map((task) => task.id).join(", ")}`
       : "All tasks finished.";
+  await logRunEnd(context.outDir, state);
   await writeState(context.outDir, state, context.canvasPath, context.canvasMirrorPath);
   return state;
 }
@@ -97,6 +102,7 @@ async function runOneTask(
   taskState.status = "RUNNING";
   taskState.startedAt = startedAt;
   await writeState(context.outDir, state, context.canvasPath, context.canvasMirrorPath);
+  await logTaskEvent(context.outDir, taskState);
 
   const controller = new AbortController();
   const prompt = stitchPrompt(task, stateById);
@@ -125,6 +131,7 @@ async function runOneTask(
   } finally {
     taskState.finishedAt = Date.now();
     taskState.durationMs = taskState.finishedAt - startedAt;
+    await logTaskEvent(context.outDir, taskState);
   }
 }
 
