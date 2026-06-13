@@ -69,25 +69,17 @@ export async function logTaskEvent(outDir: string, task: TaskState): Promise<voi
 
 /**
  * Accumulate all run.log.jsonl files from the given directory tree.
- * By default scans .quorum/runs/ recursively for per-run log files.
- * Falls back to scanning .quorum/log/ for manually accumulated files.
+ * When `logDir` is provided, scans that directory only (flat .jsonl files).
+ * When `logDir` is omitted, scans .quorum/runs/ recursively for per-run log files.
  * Returns an empty array if no log files are found.
  */
 export async function loadRunLogs(
   logDir?: string,
 ): Promise<LogEntry[]> {
   const entries: LogEntry[] = [];
-  const runDir = join(".quorum", "runs");
 
-  // First, scan per-run directories (the default location for run.log.jsonl)
-  try {
-    await collectRunDirLogs(runDir, entries);
-  } catch {
-    // .quorum/runs may not exist
-  }
-
-  // Also check the legacy flat log directory
   if (logDir) {
+    // Scan only the explicitly requested directory
     try {
       const files = await readdir(logDir);
       for (const file of files) {
@@ -101,6 +93,13 @@ export async function loadRunLogs(
       }
     } catch {
       // logDir may not exist
+    }
+  } else {
+    // Default: scan .quorum/runs/ recursively
+    try {
+      await collectRunDirLogs(join(".quorum", "runs"), entries);
+    } catch {
+      // .quorum/runs may not exist
     }
   }
 

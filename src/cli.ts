@@ -147,7 +147,7 @@ async function executeExplore(options: ExploreExecutionOptions): Promise<void> {
   await writeJson(join(outDir, "input.clusters.scored.json"), scoredDoc);
   await writeJson(join(outDir, "dag.json"), dag);
 
-  let state = initialRunState(dag);
+  let state = initialRunState(dag, resolveProvider(parsed));
   const canvasPath = canvasPathFor(parsed, outDir);
   const canvasMirrorPath = canvasMirrorPathFor(parsed, canvasPath, repo, pr);
   if (hasFlag(parsed, "plan-only")) {
@@ -202,7 +202,7 @@ async function runDagCommand(parsed: ParsedArgs): Promise<void> {
   const canvasMirrorPath = canvasMirrorPathFor(parsed, canvasPath, repo, pr);
 
   const state = hasFlag(parsed, "plan-only")
-    ? initialRunState(dag)
+    ? initialRunState(dag, resolveProvider(parsed))
     : await runDag(
         dag,
         runnerContext(parsed, repo, pr, repoUrl, prUrl, outDir, canvasPath, canvasMirrorPath),
@@ -258,8 +258,7 @@ function runnerContext(
   canvasPath: string | false,
   canvasMirrorPath: string | undefined,
 ): RunnerContext {
-  const providerFlag = flag(parsed, "provider") ?? process.env.QUORUM_PROVIDER ?? "cursor";
-  const provider = providerFlag === "anthropic" ? "anthropic" : "cursor";
+  const provider = resolveProvider(parsed);
   const apiKey = flag(parsed, "api-key")
     ?? (provider === "anthropic" ? process.env.ANTHROPIC_API_KEY : process.env.CURSOR_API_KEY);
   return {
@@ -278,12 +277,15 @@ function runnerContext(
   };
 }
 
-function resolveAdapter(parsed: ParsedArgs): TaskRunnerAdapter {
+function resolveProvider(parsed: ParsedArgs): "cursor" | "anthropic" {
   const provider = flag(parsed, "provider") ?? process.env.QUORUM_PROVIDER ?? "cursor";
-  if (provider === "anthropic") {
-    return new AnthropicAdapter();
-  }
-  return new CursorCloudAdapter();
+  return provider === "anthropic" ? "anthropic" : "cursor";
+}
+
+function resolveAdapter(parsed: ParsedArgs): TaskRunnerAdapter {
+  return resolveProvider(parsed) === "anthropic"
+    ? new AnthropicAdapter()
+    : new CursorCloudAdapter();
 }
 
 function canvasPathFor(parsed: ParsedArgs, outDir: string): string | false {
@@ -385,23 +387,26 @@ async function synthesizeCommand(parsed: ParsedArgs): Promise<void> {
 
   // Step 4: Post (or dry-run)
   const dryRun = hasFlag(parsed, "dry-run");
-  const args = ["python3", join(repoScriptsDir(), "post_synthesis.py"), ref.repo, ref.pr, scoredPath];
-  if (dryRun) args.push("--dry-run");
-  if (hasFlag(parsed, "minimize")) args.push("--minimize");
-  if (hasFlag(parsed, "no-reactions")) args.push("--no-reactions");
+  const noPost = hasFlag(parsed, "no-post");
+  if (!noPost) {
+    const args = ["python3", join(repoScriptsDir(), "post_synthesis.py"), ref.repo, ref.pr, scoredPath];
+    if (dryRun) args.push("--dry-run");
+    if (hasFlag(parsed, "minimize")) args.push("--minimize");
+    if (hasFlag(parsed, "no-reactions")) args.push("--no-reactions");
 
-  try {
-    const { stdout, stderr } = await execFileAsync("python3", args.slice(1));
-    if (dryRun) {
-      console.log(stdout);
-      if (stderr) console.error(stderr);
-    } else {
-      console.log(stdout.trim());
+    try {
+      const { stdout, stderr } = await execFileAsync("python3", args.slice(1));
+      if (dryRun) {
+        console.log(stdout);
+        if (stderr) console.error(stderr);
+      } else {
+        console.log(stdout.trim());
+      }
+    } catch (error) {
+      const err = error as { stderr?: string; message?: string };
+      console.error(err.stderr || err.message || String(error));
+      throw new Error("post_synthesis.py failed.");
     }
-  } catch (error) {
-    const err = error as { stderr?: string; message?: string };
-    console.error(err.stderr || err.message || String(error));
-    throw new Error("post_synthesis.py failed.");
   }
 }
 
@@ -445,10 +450,15 @@ async function triagePrCommand(parsed: ParsedArgs): Promise<void> {
 
   // Step 1: Synthesize
   console.log("=== Phase 1: Synthesis ===");
-  const synthParsed = cloneParsedWith(parsed, {
+  const synthOverrides: Record<string, string> = {
     out: flag(parsed, "synth-out") ?? tmpDir,
     "out-file": scoredPath,
-  });
+  };
+  // When plan-only, suppress synthesis posting too since triage-pr is read-only
+  if (hasFlag(parsed, "plan-only")) {
+    synthOverrides["no-post"] = "true";
+  }
+  const synthParsed = cloneParsedWith(parsed, synthOverrides);
   await synthesizeCommand(synthParsed);
 
   // Step 2: Explore
@@ -574,7 +584,8 @@ async function evalCommand(parsed: ParsedArgs): Promise<void> {
   const entries = await loadRunLogs(logDir);
 
   if (entries.length === 0) {
-    console.log("No run logs found in", logDir);
+    const scanned = logDir === ".quorum/log" ? ".quorum/runs/" : (logDir ?? ".quorum/runs/");
+    console.log("No run logs found in", scanned);
     console.log("Run some explorations first to populate the log.");
     return;
   }
