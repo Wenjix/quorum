@@ -107,7 +107,7 @@ async function cancelBestEffort(run: Run): Promise<void> {
  * message. This fires when more Cloud Agents are launched at once than the
  * plan allows; the fix is lower concurrency, not a different API key.
  */
-function describeCursorError(error: unknown): Error {
+export function describeCursorError(error: unknown): Error {
   const message = error instanceof Error ? error.message : String(error);
   if (/simultaneous|upgrade to ultra|more cloud agents/i.test(message)) {
     return new Error(
