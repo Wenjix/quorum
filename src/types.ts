@@ -105,6 +105,10 @@ export interface TaskExecutionInput {
   task: DagTask;
   prompt: string;
   model: string;
+  /** owner/name slug — used by provider-side fetches (e.g. the PR diff). */
+  repo: string;
+  /** PR number. */
+  pr: string;
   repoUrl: string;
   prUrl?: string;
   apiKey?: string;

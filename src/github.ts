@@ -77,6 +77,33 @@ async function apiPaginate<T extends { id: number }>(
   return results;
 }
 
+// ---- PR diff ----
+
+/**
+ * Fetch the unified diff for a PR. Uses the REST diff media type when a token is
+ * available, otherwise falls back to `gh pr diff`.
+ */
+export async function fetchPrDiff(repo: string, pr: string): Promise<string> {
+  if (token()) {
+    const url = `https://api.github.com/repos/${repo}/pulls/${pr}`;
+    const response = await fetch(url, {
+      headers: {
+        Accept: "application/vnd.github.diff",
+        "X-GitHub-Api-Version": "2022-11-28",
+        ...authHeader(),
+      },
+    });
+    if (!response.ok) {
+      const text = await response.text().catch(() => "");
+      throw new Error(
+        `GitHub API GET repos/${repo}/pulls/${pr} (diff) failed (${response.status}): ${text}`,
+      );
+    }
+    return response.text();
+  }
+  return runGh(["pr", "diff", pr, "--repo", repo]);
+}
+
 // ---- Exploration comment upsert ----
 
 export interface UpsertResult {

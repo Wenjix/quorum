@@ -1,14 +1,80 @@
+import { fetchPrDiff } from "../github.js";
 import { withRetry } from "../retry.js";
 import type { TaskExecutionInput, TaskExecutionResult, TaskRunnerAdapter } from "../types.js";
 
 const API_BASE = process.env.ANTHROPIC_BASE_URL || "https://api.anthropic.com";
 
 /**
- * Task runner that calls the Anthropic Messages API directly.
- * Set ANTHROPIC_API_KEY to use this adapter.
+ * Upper bound on injected diff size (chars). Claude handles far more, but a
+ * giant diff wastes tokens; beyond this we truncate and tell the model.
+ */
+const DIFF_CHAR_CAP = 200_000;
+
+const SYSTEM_PROMPT = [
+  "You are a read-only PR review exploration agent for Quorum.",
+  "You are given the pull request's unified diff as your view of the code; the",
+  "repository is not otherwise available. Base your analysis on that diff and the",
+  "finding details, and say so explicitly when the relevant code is not shown.",
+  "Do not suggest edits, create commits, push branches, or open pull requests.",
+  "Return a concise human-readable explanation, then end with exactly one fenced",
+  "JSON block as specified.",
+].join("\n");
+
+/**
+ * Compose the user turn: the PR diff (capped) as code context, then the task
+ * prompt. Exported for testing.
+ */
+export function buildDiffPrompt(prompt: string, diff: string): string {
+  const trimmed = diff.trim();
+  if (!trimmed) {
+    return [
+      "NOTE: the pull request diff could not be retrieved, so no code context is",
+      "available. Analyze from the finding details below and flag where you lack",
+      "evidence rather than guessing.",
+      "",
+      prompt,
+    ].join("\n");
+  }
+  const truncated = trimmed.length > DIFF_CHAR_CAP;
+  const body = truncated ? `${trimmed.slice(0, DIFF_CHAR_CAP)}\n... (diff truncated)` : trimmed;
+  return [
+    "The pull request's unified diff is provided below as your view of the code.",
+    ...(truncated ? ["It was truncated to fit; some changes are omitted."] : []),
+    "",
+    "<pr_diff>",
+    body,
+    "</pr_diff>",
+    "",
+    "---",
+    "",
+    prompt,
+  ].join("\n");
+}
+
+/**
+ * Task runner that calls the Anthropic Messages API, injecting the PR diff so the
+ * model can reason about the actual code. Set ANTHROPIC_API_KEY to use it.
  */
 export class AnthropicAdapter implements TaskRunnerAdapter {
   constructor(private options: { maxRetries?: number } = {}) {}
+
+  // Fetched once per run and shared across tasks (memoized on the promise so
+  // concurrent first calls don't each fetch).
+  private diffPromise?: Promise<string>;
+
+  private loadDiff(repo: string, pr: string): Promise<string> {
+    if (!this.diffPromise) {
+      this.diffPromise = fetchPrDiff(repo, pr).catch((error) => {
+        const detail = error instanceof Error ? error.message : String(error);
+        console.error(
+          `Could not fetch the PR diff for ${repo}#${pr}; Anthropic exploration ` +
+            `will run without code context. Set GITHUB_TOKEN or authenticate gh. (${detail})`,
+        );
+        return "";
+      });
+    }
+    return this.diffPromise;
+  }
 
   async runTask(input: TaskExecutionInput): Promise<TaskExecutionResult> {
     return withRetry(() => this.runOnce(input), {
@@ -25,14 +91,10 @@ export class AnthropicAdapter implements TaskRunnerAdapter {
     }
 
     const started = Date.now();
-    const systemPrompt = [
-      "You are a read-only PR review exploration agent for Quorum.",
-      "Do not suggest edits, create commits, push branches, or open pull requests.",
-      "Return a concise human-readable explanation, then end with exactly one fenced JSON block as specified.",
-    ].join("\n");
+    const diff = await this.loadDiff(input.repo, input.pr);
+    const userPrompt = buildDiffPrompt(input.prompt, diff);
 
     let responseText = "";
-    let assistantOutput = "";
 
     try {
       const response = await fetch(`${API_BASE}/v1/messages`, {
@@ -41,14 +103,13 @@ export class AnthropicAdapter implements TaskRunnerAdapter {
           "Content-Type": "application/json",
           "x-api-key": apiKey,
           "anthropic-version": "2023-06-01",
-          "anthropic-dangerous-direct-browser-access": "true",
         },
         signal: input.signal,
         body: JSON.stringify({
           model: input.model,
-          max_tokens: 4096,
-          system: systemPrompt,
-          messages: [{ role: "user", content: input.prompt }],
+          max_tokens: 8192,
+          system: SYSTEM_PROMPT,
+          messages: [{ role: "user", content: userPrompt }],
         }),
       });
 
@@ -60,7 +121,6 @@ export class AnthropicAdapter implements TaskRunnerAdapter {
       const body = (await response.json()) as {
         content?: Array<{ type: string; text?: string }>;
         stop_reason?: string;
-        id?: string;
       };
 
       // Guard against a malformed success response that omits/nulls content;
@@ -68,10 +128,9 @@ export class AnthropicAdapter implements TaskRunnerAdapter {
       const blocks = Array.isArray(body.content) ? body.content : [];
       for (const block of blocks) {
         if (block.type === "text" && block.text) {
-          assistantOutput += block.text;
+          responseText += block.text;
         }
       }
-      responseText = assistantOutput;
 
       if (body.stop_reason === "max_tokens") {
         console.error(`Task ${input.task.id}: response hit max_tokens limit`);
@@ -84,8 +143,7 @@ export class AnthropicAdapter implements TaskRunnerAdapter {
     }
 
     // Parse validation is owned by the runner (see applyResult): a finished-but-
-    // unparseable response is recorded as a parseError downstream, not a task
-    // error. The adapter only reports that the model produced a response.
+    // unparseable response is recorded as a parseError downstream, not a task error.
     return {
       status: "finished",
       resultText: responseText,

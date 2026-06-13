@@ -113,6 +113,8 @@ async function runOneTask(
         task,
         prompt,
         model,
+        repo: context.repo,
+        pr: context.pr,
         repoUrl: context.repoUrl,
         prUrl: context.prUrl,
         apiKey: context.apiKey,
