@@ -520,8 +520,8 @@ async function setupCommand(): Promise<void> {
     help: "Set CURSOR_API_KEY for Cursor Cloud or ANTHROPIC_API_KEY for Anthropic",
   });
   checks.push({
-    name: `GITHUB_TOKEN (${githubToken ? "set" : "not set"})`,
-    ok: githubToken,
+    name: `GITHUB_TOKEN (${githubToken ? "set" : "not set"}, optional)`,
+    ok: true,
     help: "Set GITHUB_TOKEN for direct GitHub API access (falls back to gh CLI)",
   });
 

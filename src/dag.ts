@@ -14,22 +14,28 @@ const MODEL_ENV_VARS: Record<Complexity, string> = {
 
 const COMPLEXITIES = new Set<Complexity>(["HIGH", "MED", "LOW"]);
 
-/** Build the effective model map: env vars > config file > DAG overrides > defaults. */
+/**
+ * Build the effective model map.
+ * Precedence: env vars > DAG overrides > defaults.
+ * Env vars always win so users can override models in saved dag.json files.
+ */
 export function resolveModelMap(
   overrides: Partial<Record<Complexity, string>> | undefined,
 ): Record<Complexity, string> {
   const models = { ...DEFAULT_MODEL_MAP };
-  for (const level of COMPLEXITIES) {
-    const envValue = process.env[MODEL_ENV_VARS[level]];
-    if (envValue?.trim()) {
-      models[level] = envValue.trim();
-    }
-  }
+  // Apply DAG overrides first (they layer on top of defaults)
   if (overrides) {
     for (const level of COMPLEXITIES) {
       if (overrides[level]?.trim()) {
         models[level] = overrides[level].trim();
       }
+    }
+  }
+  // Env vars are applied last so they always win
+  for (const level of COMPLEXITIES) {
+    const envValue = process.env[MODEL_ENV_VARS[level]];
+    if (envValue?.trim()) {
+      models[level] = envValue.trim();
     }
   }
   return models;

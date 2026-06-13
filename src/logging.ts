@@ -1,5 +1,6 @@
 import { appendFile, mkdir, readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
+import type { Dirent } from "node:fs";
 import type { RunState, TaskState } from "./types.js";
 
 export interface LogEntry {
@@ -65,34 +66,79 @@ export async function logTaskEvent(outDir: string, task: TaskState): Promise<voi
 }
 
 /**
- * Accumulate all run.log.jsonl files from .quorum/log/ into a combined array of log entries.
- * If .quorum/log/ doesn't exist or is empty, returns an empty array.
+ * Accumulate all run.log.jsonl files from the given directory tree.
+ * By default scans .quorum/runs/ recursively for per-run log files.
+ * Falls back to scanning .quorum/log/ for manually accumulated files.
+ * Returns an empty array if no log files are found.
  */
 export async function loadRunLogs(
-  logDir: string = join(".quorum", "log"),
+  logDir?: string,
 ): Promise<LogEntry[]> {
   const entries: LogEntry[] = [];
-  let files: string[] = [];
+  const runDir = join(".quorum", "runs");
+
+  // First, scan per-run directories (the default location for run.log.jsonl)
   try {
-    files = await readdir(logDir);
+    await collectRunDirLogs(runDir, entries);
   } catch {
-    return entries;
+    // .quorum/runs may not exist
   }
 
-  for (const file of files) {
-    if (!file.endsWith(".jsonl")) continue;
+  // Also check the legacy flat log directory
+  if (logDir) {
     try {
-      const content = await readFile(join(logDir, file), "utf8");
-      for (const line of content.split("\n")) {
-        if (!line.trim()) continue;
+      const files = await readdir(logDir);
+      for (const file of files) {
+        if (!file.endsWith(".jsonl")) continue;
         try {
-          entries.push(JSON.parse(line) as LogEntry);
+          const content = await readFile(join(logDir, file), "utf8");
+          entries.push(...parseLogLines(content));
         } catch {
-          // Skip malformed lines
+          // Skip unreadable files
         }
       }
     } catch {
-      // Skip unreadable files
+      // logDir may not exist
+    }
+  }
+
+  return entries;
+}
+
+async function collectRunDirLogs(
+  dir: string,
+  entries: LogEntry[],
+): Promise<void> {
+  let items: Dirent[] = [];
+  try {
+    items = await readdir(dir, { withFileTypes: true });
+  } catch {
+    return;
+  }
+
+  for (const item of items) {
+    const fullPath = join(dir, item.name);
+    if (item.isDirectory()) {
+      await collectRunDirLogs(fullPath, entries);
+    } else if (item.name === "run.log.jsonl") {
+      try {
+        const content = await readFile(fullPath, "utf8");
+        entries.push(...parseLogLines(content));
+      } catch {
+        // Skip unreadable files
+      }
+    }
+  }
+}
+
+function parseLogLines(content: string): LogEntry[] {
+  const entries: LogEntry[] = [];
+  for (const line of content.split("\n")) {
+    if (!line.trim()) continue;
+    try {
+      entries.push(JSON.parse(line) as LogEntry);
+    } catch {
+      // Skip malformed lines
     }
   }
   return entries;
