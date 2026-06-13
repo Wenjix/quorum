@@ -270,9 +270,11 @@ function runnerContext(
     canvasPath,
     canvasMirrorPath,
     apiKey,
-    // Cursor Cloud plans cap how many agents run simultaneously, so default to
-    // serial for that provider; Anthropic API calls parallelize safely.
-    concurrency: numberFlag(parsed, "concurrency", provider === "cursor" ? 1 : 4),
+    // Default to 4 simultaneous tasks for both providers. Cursor Cloud plans may
+    // cap concurrent agents; if that cap is hit, the adapter surfaces an
+    // actionable error (see describeCursorError) telling the user to lower
+    // --concurrency or upgrade their plan.
+    concurrency: numberFlag(parsed, "concurrency", 4),
     taskTimeoutMs: numberFlag(parsed, "task-timeout-ms", 20 * 60 * 1000),
     stream: !hasFlag(parsed, "no-stream") && provider === "cursor",
     provider,
@@ -768,7 +770,7 @@ Options:
   --scored PATH                Use a local clusters.scored.json.
   --out DIR                    Output directory.
   --post                       For run-pr only: upsert the PR exploration comment.
-  --concurrency N              Simultaneous tasks. Default: 1 (cursor), 4 (anthropic).
+  --concurrency N              Simultaneous tasks. Default: 4.
   --task-timeout-ms N          Default: 1200000.
   --dry-run | --no-post        Do not write a PR comment.
   --plan-only                  Generate DAG/state/report without cloud or GitHub calls.
