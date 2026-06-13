@@ -97,6 +97,8 @@ export interface RunnerContext {
   concurrency: number;
   taskTimeoutMs: number;
   stream: boolean;
+  /** Provider identifier for resolving default models. */
+  provider?: "cursor" | "anthropic";
 }
 
 export interface TaskExecutionInput {

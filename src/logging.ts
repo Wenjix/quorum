@@ -12,6 +12,7 @@ export interface LogEntry {
   clusterId?: string;
   status?: string;
   errorMessage?: string;
+  parseError?: string;
   durationMs?: number;
   agentId?: string;
   runId?: string;
@@ -59,6 +60,7 @@ export async function logTaskEvent(outDir: string, task: TaskState): Promise<voi
     clusterId: task.cluster_id,
     status: task.status,
     errorMessage: task.errorMessage,
+    parseError: task.parseError,
     durationMs: task.durationMs,
     agentId: task.agentId,
     runId: task.runId,

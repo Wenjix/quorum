@@ -258,7 +258,8 @@ function runnerContext(
   canvasPath: string | false,
   canvasMirrorPath: string | undefined,
 ): RunnerContext {
-  const provider = flag(parsed, "provider") ?? process.env.QUORUM_PROVIDER ?? "cursor";
+  const providerFlag = flag(parsed, "provider") ?? process.env.QUORUM_PROVIDER ?? "cursor";
+  const provider = providerFlag === "anthropic" ? "anthropic" : "cursor";
   const apiKey = flag(parsed, "api-key")
     ?? (provider === "anthropic" ? process.env.ANTHROPIC_API_KEY : process.env.CURSOR_API_KEY);
   return {
@@ -273,6 +274,7 @@ function runnerContext(
     concurrency: numberFlag(parsed, "concurrency", 4),
     taskTimeoutMs: numberFlag(parsed, "task-timeout-ms", 20 * 60 * 1000),
     stream: !hasFlag(parsed, "no-stream") && provider === "cursor",
+    provider,
   };
 }
 
@@ -586,15 +588,25 @@ async function evalCommand(parsed: ParsedArgs): Promise<void> {
 
   console.log(`Eval Report — ${runs.size} run(s), ${entries.length} event(s)\n`);
 
-  // Task success rate
+  // Task success rate — a finished task with parseError counts as degraded
   const tasks = entries.filter((e) => e.type === "task_end" || e.type === "task_error" || e.type === "task_skip");
-  const finished = tasks.filter((e) => e.type === "task_end" && e.status === "FINISHED").length;
+  const finishedClean = tasks.filter(
+    (e) => e.type === "task_end" && e.status === "FINISHED" && !e.parseError,
+  ).length;
+  const finishedDegraded = tasks.filter(
+    (e) => e.type === "task_end" && e.status === "FINISHED" && e.parseError,
+  ).length;
+  const finished = finishedClean + finishedDegraded;
   const errors = tasks.filter((e) => e.type === "task_error" || e.status === "ERROR").length;
   const skipped = tasks.filter((e) => e.type === "task_skip").length;
 
   console.log("## Task Outcomes");
   console.log(`  Total tasks: ${tasks.length}`);
-  console.log(`  Finished: ${finished} (${tasks.length ? ((finished / tasks.length) * 100).toFixed(0) : 0}%)`);
+  console.log(`  Finished clean: ${finishedClean}`);
+  if (finishedDegraded > 0) {
+    console.log(`  Finished (degraded parse): ${finishedDegraded}`);
+  }
+  console.log(`  Finished total: ${finished} (${tasks.length ? ((finished / tasks.length) * 100).toFixed(0) : 0}%)`);
   console.log(`  Errors: ${errors}`);
   console.log(`  Skipped: ${skipped}`);
   console.log("");

@@ -1,10 +1,22 @@
 import type { Complexity, Dag, DagTask } from "./types.js";
 
-export const DEFAULT_MODEL_MAP: Record<Complexity, string> = {
+export type Provider = "cursor" | "anthropic";
+
+export const CURSOR_DEFAULT_MODELS: Record<Complexity, string> = {
   HIGH: "gpt-5.3-codex",
   MED: "composer-2",
   LOW: "auto-low",
 };
+
+export const ANTHROPIC_DEFAULT_MODELS: Record<Complexity, string> = {
+  HIGH: "claude-sonnet-4-20250514",
+  MED: "claude-sonnet-4-20250514",
+  LOW: "claude-haiku-4-20250514",
+};
+
+export function defaultModelsFor(provider: Provider): Record<Complexity, string> {
+  return provider === "anthropic" ? ANTHROPIC_DEFAULT_MODELS : CURSOR_DEFAULT_MODELS;
+}
 
 const MODEL_ENV_VARS: Record<Complexity, string> = {
   HIGH: "QUORUM_MODEL_HIGH",
@@ -15,15 +27,16 @@ const MODEL_ENV_VARS: Record<Complexity, string> = {
 const COMPLEXITIES = new Set<Complexity>(["HIGH", "MED", "LOW"]);
 
 /**
- * Build the effective model map.
- * Precedence: env vars > DAG overrides > defaults.
+ * Build the effective model map for a given provider.
+ * Precedence: env vars > DAG overrides > provider defaults.
  * Env vars always win so users can override models in saved dag.json files.
  */
 export function resolveModelMap(
   overrides: Partial<Record<Complexity, string>> | undefined,
+  provider: Provider = "cursor",
 ): Record<Complexity, string> {
-  const models = { ...DEFAULT_MODEL_MAP };
-  // Apply DAG overrides first (they layer on top of defaults)
+  const models = { ...defaultModelsFor(provider) };
+  // Apply DAG overrides first (they layer on top of provider defaults)
   if (overrides) {
     for (const level of COMPLEXITIES) {
       if (overrides[level]?.trim()) {
@@ -140,8 +153,9 @@ export function computeRanks(dag: Dag): DagTask[][] {
 
 export function createModelResolver(
   overrides: Partial<Record<Complexity, string>> | undefined,
+  provider: Provider = "cursor",
 ): (complexity: Complexity) => string {
-  const models = resolveModelMap(overrides);
+  const models = resolveModelMap(overrides, provider);
   return (complexity) => models[complexity];
 }
 
