@@ -8,10 +8,12 @@ export const RETRY_BACKOFF_MS = [1_000, 4_000, 16_000];
 export function retryableError(error: unknown): boolean {
   if (error instanceof Error) {
     const msg = error.message.toLowerCase();
-    if (msg.includes("rate") || msg.includes("throttle") || msg.includes("capacity")) return true;
+    // Match "rate" only within "rate limit" so it never fires on words like
+    // "generate"/"moderate"; covers rate limit / rate_limit / ratelimit.
+    if (/rate[\s_-]?limit/.test(msg) || msg.includes("throttle") || msg.includes("capacity")) return true;
     if (msg.includes("network") || msg.includes("timeout") || msg.includes("econnrefused")) return true;
-    if (/\b(500|502|503|504)\b/.test(msg)) return true;
-    if (msg.includes("429")) return true;
+    // Word-bounded so number tokens like "5000" or "4290" aren't read as 500/429.
+    if (/\b(429|500|502|503|504)\b/.test(msg)) return true;
     if (msg.includes("overloaded")) return true;
   }
   return false;

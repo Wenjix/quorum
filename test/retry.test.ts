@@ -20,6 +20,14 @@ test("retryableError ignores numbers that merely contain a 5xx substring", () =>
   assert.equal(retryableError(new Error("not_found_error: invalid model id")), false);
 });
 
+test("retryableError matches rate-limit phrasings without firing on lookalikes", () => {
+  assert.equal(retryableError(new Error("rate limit exceeded")), true);
+  assert.equal(retryableError(new Error("rate_limit_error")), true); // Anthropic error type
+  // Lookalikes must not trigger retries (same substring class as the 5xx fix):
+  assert.equal(retryableError(new Error("failed to generate output")), false);
+  assert.equal(retryableError(new Error("max_tokens: 4290 > model maximum")), false);
+});
+
 test("sleep resolves immediately when the signal is already aborted", async () => {
   const controller = new AbortController();
   controller.abort();
