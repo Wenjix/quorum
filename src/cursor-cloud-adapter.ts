@@ -112,8 +112,8 @@ export function describeCursorError(error: unknown): Error {
   if (/simultaneous|upgrade to ultra|more cloud agents/i.test(message)) {
     return new Error(
       "Cursor rejected a concurrent Cloud Agent launch — your plan limits how many " +
-        "Cloud Agents run at once. Lower --concurrency (the cursor default is 1) or " +
-        `upgrade your Cursor plan. Original error: ${message}`,
+        "Cloud Agents run at once. Lower --concurrency or upgrade your Cursor plan. " +
+        `Original error: ${message}`,
     );
   }
   return error instanceof Error ? error : new Error(message);

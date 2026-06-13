@@ -13,6 +13,8 @@ test("describeCursorError rewrites the simultaneous-agent plan-limit error", () 
   // Points the user at the real fix instead of the opaque upstream message.
   assert.match(result.message, /--concurrency/);
   assert.match(result.message, /plan limits how many/i);
+  // No stale hardcoded default (the runner default has changed before).
+  assert.doesNotMatch(result.message, /default is \d/);
   // Preserves the original text for debugging.
   assert.match(result.message, /Original error:/);
   assert.ok(result.message.includes("simultaneously"));

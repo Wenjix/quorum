@@ -54,7 +54,7 @@ def first_line(text, limit=80):
     return "(no comment text)"
 
 
-def singleton_from(finding, parent_id=None):
+def singleton_from(finding, parent_id=None, parent_severity=None):
     lines = finding.get("lines") or [None, None]
     c = {
         "cluster_id": f"{finding['id']}-solo",
@@ -62,7 +62,10 @@ def singleton_from(finding, parent_id=None):
         "canonical_title": first_line(finding.get("body")),
         "canonical_description": first_line(finding.get("body"), 240),
         "category": "other",
-        "severity": "minor",
+        # Preserve the parent cluster's severity when the confidence gate splits
+        # it, so a low-confidence cluster does not silently downgrade a critical
+        # finding to "minor". Genuine standalone singletons fall back to "minor".
+        "severity": parent_severity or "minor",
         "primary_location": {
             "file": finding.get("file"),
             "start_line": lines[0],
@@ -151,7 +154,10 @@ def main():
             and float(c["match_confidence"]) < args.confidence_gate
         ):
             gated.append(c["cluster_id"])
-            out_clusters.extend(singleton_from(fmap[m], c["cluster_id"]) for m in c["member_ids"])
+            out_clusters.extend(
+                singleton_from(fmap[m], c["cluster_id"], c.get("severity"))
+                for m in c["member_ids"]
+            )
         else:
             out_clusters.append(dict(c))
 

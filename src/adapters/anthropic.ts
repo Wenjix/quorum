@@ -58,12 +58,15 @@ export class AnthropicAdapter implements TaskRunnerAdapter {
       }
 
       const body = (await response.json()) as {
-        content: Array<{ type: string; text?: string }>;
+        content?: Array<{ type: string; text?: string }>;
         stop_reason?: string;
         id?: string;
       };
 
-      for (const block of body.content) {
+      // Guard against a malformed success response that omits/nulls content;
+      // an empty result is recorded downstream as a parseError, not a throw.
+      const blocks = Array.isArray(body.content) ? body.content : [];
+      for (const block of blocks) {
         if (block.type === "text" && block.text) {
           assistantOutput += block.text;
         }

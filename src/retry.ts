@@ -10,15 +10,31 @@ export function retryableError(error: unknown): boolean {
     const msg = error.message.toLowerCase();
     if (msg.includes("rate") || msg.includes("throttle") || msg.includes("capacity")) return true;
     if (msg.includes("network") || msg.includes("timeout") || msg.includes("econnrefused")) return true;
-    if (msg.includes("5") && (msg.includes("status") || msg.includes("500") || msg.includes("502") || msg.includes("503") || msg.includes("504"))) return true;
+    if (/\b(500|502|503|504)\b/.test(msg)) return true;
     if (msg.includes("429")) return true;
     if (msg.includes("overloaded")) return true;
   }
   return false;
 }
 
-export function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+/**
+ * Sleep for `ms`, resolving early if `signal` aborts so a cancelled run does
+ * not wait out the full backoff before noticing.
+ */
+export function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  if (signal?.aborted) return Promise.resolve();
+  return new Promise((resolve) => {
+    let timer: ReturnType<typeof setTimeout>;
+    const onAbort = (): void => {
+      clearTimeout(timer);
+      resolve();
+    };
+    timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
 }
 
 export interface RetryOptions {
@@ -55,7 +71,8 @@ export async function withRetry<T>(
           `Attempt ${attempt + 1} failed${tag}, retrying in ${delay}ms: ` +
             `${error instanceof Error ? error.message : String(error)}`,
         );
-        await sleep(delay);
+        await sleep(delay, options.signal);
+        if (options.signal?.aborted) break;
         continue;
       }
       break;

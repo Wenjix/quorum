@@ -16,6 +16,7 @@ import { parseDag } from "./dag.js";
 import { upsertExplorationComment } from "./github.js";
 import { loadRunLogs } from "./logging.js";
 import type { LogEntry } from "./logging.js";
+import { scriptsDirFromModuleUrl } from "./paths.js";
 import { parsePullRequestRef, repoSlug } from "./pr.js";
 import { buildExplorationDag } from "./prompts.js";
 import { buildExplorationReport, renderExplorationMarkdown } from "./report.js";
@@ -729,14 +730,9 @@ function createRunId(repo: string, pr: string): string {
 }
 
 function repoScriptsDir(): string {
-  // When installed as npm package or running from source, scripts are in <package>/scripts/.
-  // cli.js lives at dist/src/cli.js, so go up 3 dirs: dist/src -> dist -> <pkgRoot>.
-  const url = import.meta.url;
-  if (url.startsWith("file://")) {
-    const filePath = url.replace("file://", "");
-    return join(dirname(dirname(dirname(filePath))), "scripts");
-  }
-  return join(process.cwd(), "scripts");
+  // When installed as an npm package or running from source, scripts live in
+  // <package>/scripts/. Resolution (incl. Windows + spaces) lives in paths.ts.
+  return scriptsDirFromModuleUrl(import.meta.url);
 }
 
 function printHelp(): void {
