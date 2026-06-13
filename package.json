@@ -17,6 +17,7 @@
     "README.md"
   ],
   "scripts": {
+    "prebuild": "rm -rf dist",
     "build": "tsc -p tsconfig.json",
     "build:skill": "rm -f quorum.skill && mkdir -p .skill-build/quorum && cp SKILL.md .skill-build/quorum/ && cp -r scripts references .skill-build/quorum/ && cd .skill-build && zip -r ../quorum.skill quorum/ && cd .. && rm -rf .skill-build && echo 'quorum.skill rebuilt'",
     "test": "npm run build && node --test dist/test/*.test.js",
