@@ -87,7 +87,7 @@ export class CursorCloudAdapter implements TaskRunnerAdapter {
       if (input.signal.aborted && run) {
         await cancelBestEffort(run);
       }
-      throw error;
+      throw describeCursorError(error);
     } finally {
       input.signal.removeEventListener("abort", abortHandler);
       if (agent) {
@@ -100,6 +100,23 @@ export class CursorCloudAdapter implements TaskRunnerAdapter {
 async function cancelBestEffort(run: Run): Promise<void> {
   if (!run.supports("cancel")) return;
   await run.cancel().catch(() => undefined);
+}
+
+/**
+ * Turn Cursor's opaque simultaneous-agent plan-limit error into an actionable
+ * message. This fires when more Cloud Agents are launched at once than the
+ * plan allows; the fix is lower concurrency, not a different API key.
+ */
+function describeCursorError(error: unknown): Error {
+  const message = error instanceof Error ? error.message : String(error);
+  if (/simultaneous|upgrade to ultra|more cloud agents/i.test(message)) {
+    return new Error(
+      "Cursor rejected a concurrent Cloud Agent launch — your plan limits how many " +
+        "Cloud Agents run at once. Lower --concurrency (the cursor default is 1) or " +
+        `upgrade your Cursor plan. Original error: ${message}`,
+    );
+  }
+  return error instanceof Error ? error : new Error(message);
 }
 
 function textFromSdkMessage(event: SDKMessage): string {

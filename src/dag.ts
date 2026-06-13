@@ -4,14 +4,14 @@ export type Provider = "cursor" | "anthropic";
 
 export const CURSOR_DEFAULT_MODELS: Record<Complexity, string> = {
   HIGH: "gpt-5.3-codex",
-  MED: "composer-2",
-  LOW: "auto-low",
+  MED: "composer-2.5",
+  LOW: "composer-2.5",
 };
 
 export const ANTHROPIC_DEFAULT_MODELS: Record<Complexity, string> = {
-  HIGH: "claude-sonnet-4-20250514",
-  MED: "claude-sonnet-4-20250514",
-  LOW: "claude-haiku-4-20250514",
+  HIGH: "claude-opus-4-8",
+  MED: "claude-sonnet-4-6",
+  LOW: "claude-haiku-4-5",
 };
 
 export function defaultModelsFor(provider: Provider): Record<Complexity, string> {

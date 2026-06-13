@@ -270,7 +270,9 @@ function runnerContext(
     canvasPath,
     canvasMirrorPath,
     apiKey,
-    concurrency: numberFlag(parsed, "concurrency", 4),
+    // Cursor Cloud plans cap how many agents run simultaneously, so default to
+    // serial for that provider; Anthropic API calls parallelize safely.
+    concurrency: numberFlag(parsed, "concurrency", provider === "cursor" ? 1 : 4),
     taskTimeoutMs: numberFlag(parsed, "task-timeout-ms", 20 * 60 * 1000),
     stream: !hasFlag(parsed, "no-stream") && provider === "cursor",
     provider,
@@ -580,11 +582,13 @@ async function dirExists(path: string): Promise<boolean> {
 // ---- eval command ----
 
 async function evalCommand(parsed: ParsedArgs): Promise<void> {
-  const logDir = flag(parsed, "log-dir") ?? join(".quorum", "log");
+  // Leave logDir undefined when --log-dir is absent so loadRunLogs recursively
+  // scans .quorum/runs/ (where per-run logs live) instead of a flat directory.
+  const logDir = flag(parsed, "log-dir");
   const entries = await loadRunLogs(logDir);
 
   if (entries.length === 0) {
-    const scanned = logDir === ".quorum/log" ? ".quorum/runs/" : (logDir ?? ".quorum/runs/");
+    const scanned = logDir ?? join(".quorum", "runs");
     console.log("No run logs found in", scanned);
     console.log("Run some explorations first to populate the log.");
     return;
@@ -764,7 +768,7 @@ Options:
   --scored PATH                Use a local clusters.scored.json.
   --out DIR                    Output directory.
   --post                       For run-pr only: upsert the PR exploration comment.
-  --concurrency N              Default: 4.
+  --concurrency N              Simultaneous tasks. Default: 1 (cursor), 4 (anthropic).
   --task-timeout-ms N          Default: 1200000.
   --dry-run | --no-post        Do not write a PR comment.
   --plan-only                  Generate DAG/state/report without cloud or GitHub calls.

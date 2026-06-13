@@ -1,4 +1,3 @@
-import { extractMarkedJson } from "../json-result.js";
 import { withRetry } from "../retry.js";
 import type { TaskExecutionInput, TaskExecutionResult, TaskRunnerAdapter } from "../types.js";
 
@@ -81,13 +80,13 @@ export class AnthropicAdapter implements TaskRunnerAdapter {
       throw error;
     }
 
-    const parsed = extractMarkedJson(responseText);
-    const status = parsed.value !== undefined ? "finished" as const : "finished" as const;
+    // Parse validation is owned by the runner (see applyResult): a finished-but-
+    // unparseable response is recorded as a parseError downstream, not a task
+    // error. The adapter only reports that the model produced a response.
     return {
-      status,
+      status: "finished",
       resultText: responseText,
       durationMs: Date.now() - started,
-      // Anthropic doesn't have agent/run IDs; use the request ID if available
     };
   }
 }
