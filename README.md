@@ -4,7 +4,7 @@ Quorum turns noisy automated PR reviews into one prioritized, explainable review
 
 Modern teams often run several AI reviewers on the same pull request: Cursor Bugbot, GitHub Copilot, Devin Reviewer, CodeRabbit, and others. Each reviewer may catch useful issues, but the result is hard to scan, hard to compare, and hard for follow-up agents to use.
 
-Quorum adds a consensus layer. It groups duplicate findings, highlights where multiple reviewers agree, and can launch Cursor Cloud agents to explain root causes and search for similar bug patterns elsewhere in the repository.
+Quorum adds a consensus layer. It groups duplicate findings, highlights where multiple reviewers agree, and can launch cloud agents — Cursor Cloud by default, or Anthropic — to explain root causes and search for similar bug patterns elsewhere in the repository.
 
 ## Why It Matters
 
@@ -36,10 +36,10 @@ Quorum currently has two layers.
    - Computes reviewer quorum deterministically.
    - Posts one idempotent synthesis comment back to the PR.
 
-2. **Cursor Cloud exploration runner**
+2. **Cloud exploration runner**
    - Reads the scored Quorum clusters.
    - Selects quorum-backed findings, by default `quorum >= 2`.
-   - Runs a small DAG of Cursor Cloud agents for each selected cluster.
+   - Runs a small DAG of agents for each selected cluster, on a pluggable backend: Cursor Cloud (default) or Anthropic.
    - Produces root-cause analysis, pattern-sweep results, local artifacts, and an optional PR comment.
    - Renders a live-updating Cursor Canvas of the DAG while agents run.
 
@@ -79,7 +79,7 @@ exploration.md + exploration.json + Canvas + optional PR comment
 - `npm`
 - `gh` CLI, authenticated for the target GitHub repo
 - `jq` and `python3` for the skill scripts
-- `CURSOR_API_KEY` for live Cursor Cloud exploration
+- An exploration backend key for live runs: `CURSOR_API_KEY` (default Cursor Cloud backend) or `ANTHROPIC_API_KEY` (with `--provider anthropic`). An authenticated `gh` or `GITHUB_TOKEN` also lets the Anthropic backend fetch the PR diff for code context; it degrades gracefully without one.
 
 Install dependencies and build:
 
@@ -128,21 +128,31 @@ Use Quorum to triage the bot reviews on this PR.
 
 The skill posts a Quorum synthesis comment that embeds `clusters.scored.json`. The Phase 2 runner can recover that JSON from the PR automatically, so you usually do not need to pass a local `--scored` path.
 
-## Use the Cursor Cloud Runner
-
-First set your Cursor API key:
+You can also run Phase 1 directly from the CLI without the skill:
 
 ```bash
-export CURSOR_API_KEY="crsr_..."
+quorum synthesize OWNER/REPO#123
 ```
 
-Generate the exploration DAG, report shell, and Canvas without making Cursor Cloud calls:
+This fetches findings, scores clusters deterministically, and upserts the synthesis comment. Add `--dry-run` to preview the comment or `--no-post` to skip posting.
+
+## Use the Cloud Runner
+
+First set the API key for your backend (Cursor Cloud is the default):
+
+```bash
+export CURSOR_API_KEY="crsr_..."        # default backend
+# or, for the Anthropic backend:
+export ANTHROPIC_API_KEY="sk-ant-..."
+```
+
+Generate the exploration DAG, report shell, and Canvas without making any cloud or GitHub calls:
 
 ```bash
 quorum plan-pr https://github.com/OWNER/REPO/pull/123
 ```
 
-Run live Cursor Cloud exploration but do not post to GitHub:
+Run live exploration but do not post to GitHub:
 
 ```bash
 quorum run-pr https://github.com/OWNER/REPO/pull/123
@@ -153,6 +163,31 @@ Run live exploration and upsert the PR exploration comment:
 ```bash
 quorum post-pr https://github.com/OWNER/REPO/pull/123
 ```
+
+Synthesize and explore in one shot (Phase 1 then Phase 2):
+
+```bash
+quorum triage-pr https://github.com/OWNER/REPO/pull/123
+```
+
+### Choosing a provider
+
+Exploration runs on a pluggable backend. Cursor Cloud is the default; Anthropic is an alternative.
+
+```bash
+--provider cursor|anthropic   Backend to use. Default: cursor (or $QUORUM_PROVIDER).
+--api-key KEY                 Override the backend API key for this run.
+```
+
+Set the default with the `QUORUM_PROVIDER` environment variable. Each backend has per-complexity default models, overridable with `QUORUM_MODEL_HIGH`, `QUORUM_MODEL_MED`, and `QUORUM_MODEL_LOW` (env vars win over a saved `dag.json`, which wins over these defaults):
+
+| Complexity | Cursor (default) | Anthropic           |
+| ---------- | ---------------- | ------------------- |
+| HIGH       | `gpt-5.3-codex`  | `claude-opus-4-8`   |
+| MED        | `composer-2.5`   | `claude-sonnet-4-6` |
+| LOW        | `composer-2.5`   | `claude-haiku-4-5`  |
+
+The Anthropic backend is **code-aware**: it fetches the pull request's unified diff and injects it as the agent's view of the code (capped at 200k characters, read-only — it never edits, commits, or pushes). When the diff cannot be fetched it falls back to a "no code context" note and flags missing evidence rather than guessing, so authenticate `gh` or set `GITHUB_TOKEN` for best results.
 
 Open or regenerate a Canvas from an existing run:
 
@@ -173,6 +208,8 @@ quorum explore \
 Useful options:
 
 ```bash
+--provider NAME          Backend: cursor (default) or anthropic.
+--api-key KEY            Override the backend API key.
 --cluster ID[,ID]        Explore specific cluster IDs.
 --min-quorum N           Default: 2.
 --max-clusters N         Limit selected clusters.
@@ -182,11 +219,19 @@ Useful options:
 --task-timeout-ms N      Default: 1200000.
 --dry-run | --no-post    Do not write a PR comment.
 --post                   For run-pr only: post the exploration comment after running.
---plan-only              Do not call Cursor Cloud or GitHub.
---no-stream              Wait for final agent results only.
+--plan-only              Do not call the cloud backend or GitHub.
+--no-stream              Wait for final agent results only (Cursor backend).
 --canvas-path PATH       Write the Cursor Canvas artifact to this path.
 --no-canvas              Skip Canvas generation.
 --no-canvas-mirror       Skip mirroring the Canvas into Cursor's managed canvases directory.
+```
+
+### Utility commands
+
+```bash
+quorum setup                 Check prerequisites, backend keys, and skill install.
+quorum eval [--log-dir DIR]  Summarize past run logs (task outcomes, durations).
+quorum run-dag --dag dag.json --out DIR --repo OWNER/REPO   Run a saved DAG directly.
 ```
 
 ## Outputs
@@ -243,8 +288,8 @@ Quorum treats reviewer consensus as signal, not truth.
 
 - Clustering is conservative: when uncertain, keep findings separate.
 - Quorum is computed in code from distinct reviewers, not by the model.
-- Cursor Cloud exploration is read-only by prompt and by configuration.
-- The runner sets `autoCreatePR: false` and does not ask cloud agents to edit files.
+- Cloud exploration is read-only by prompt and by configuration, on both the Cursor and Anthropic backends.
+- The Cursor runner sets `autoCreatePR: false`; the Anthropic backend only ever sees the PR diff and is instructed never to edit, commit, or push. Neither asks agents to change files.
 - Pattern sweeps classify likely and possible repeats; they do not apply fixes.
 
 ## Repository Layout
@@ -260,12 +305,13 @@ package.json             Build, test, and dependency metadata
 Key source modules:
 
 - `src/cli.ts`: command-line interface
-- `src/dag.ts`: DAG validation and rank computation
+- `src/dag.ts`: DAG validation, rank computation, and per-provider model defaults
 - `src/runner.ts`: task execution and state persistence
 - `src/canvas.ts`: Cursor Canvas rendering
-- `src/cursor-cloud-adapter.ts`: Cursor SDK integration
+- `src/cursor-cloud-adapter.ts`: Cursor Cloud backend
+- `src/adapters/anthropic.ts`: Anthropic backend (code-aware via PR diff injection)
 - `src/report.ts`: JSON and Markdown exploration reports
-- `src/github.ts`: idempotent PR comment upsert
+- `src/github.ts`: idempotent PR comment upsert and PR diff fetch
 
 ## Development
 

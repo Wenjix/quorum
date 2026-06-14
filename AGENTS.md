@@ -23,14 +23,17 @@ Single Node.js/TypeScript CLI — no server, no watch mode.
   from a branch switch can't leak into a run.
 - After editing `src/`, rebuild and invoke with `node dist/src/cli.js <command>` (no `npm link` step).
 - **Offline / no-credentials runs:** `plan-pr <PR-URL>` is plan-only by design — it builds the
-  DAG → state → report → Canvas without calling Cursor Cloud. It still reads the PR's findings from
+  DAG → state → report → Canvas without calling any cloud backend. It still reads the PR's findings from
   GitHub unless you pass them locally with `--scored <clusters.scored.json>`, which makes the run
   fully offline:
   `node dist/src/cli.js plan-pr https://github.com/OWNER/REPO/pull/N --scored clusters.scored.json`.
   On the lower-level `explore`/`triage-pr` commands the same cloud-skip is the `--plan-only` flag.
 - **Live commands** — `run-pr`, `post-pr`, `run-dag`, and `triage-pr` without `--plan-only` — call
-  Cursor Cloud and/or GitHub and need `CURSOR_API_KEY` plus an authenticated `gh` CLI. Without them
-  the runner still completes, recording per-task `ERROR`/`SKIPPED` instead of crashing.
+  the exploration backend and/or GitHub. They need the selected backend's key — `CURSOR_API_KEY`
+  (default) or `ANTHROPIC_API_KEY` (with `--provider anthropic` / `QUORUM_PROVIDER=anthropic`) — plus
+  an authenticated `gh` CLI. The Anthropic backend also fetches the PR diff for code context, so
+  `GITHUB_TOKEN`/`gh` auth improves it but is non-fatal if missing. Without credentials the runner
+  still completes, recording per-task `ERROR`/`SKIPPED` instead of crashing.
 - Run artifacts are written under `.quorum/` (gitignored).
 
 ## Cursor Cloud
