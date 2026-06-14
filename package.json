@@ -30,6 +30,11 @@
   "dependencies": {
     "@cursor/sdk": "^1.0.18"
   },
+  "overrides": {
+    "@tootallnate/once": "^2.0.1",
+    "tar": "^7.5.10",
+    "undici": "^6.24.0"
+  },
   "devDependencies": {
     "@types/node": "^25.0.0",
     "typescript": "^6.0.3"
