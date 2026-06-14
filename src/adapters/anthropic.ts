@@ -58,22 +58,31 @@ export function buildDiffPrompt(prompt: string, diff: string): string {
 export class AnthropicAdapter implements TaskRunnerAdapter {
   constructor(private options: { maxRetries?: number } = {}) {}
 
-  // Fetched once per run and shared across tasks (memoized on the promise so
-  // concurrent first calls don't each fetch).
-  private diffPromise?: Promise<string>;
+  // Diff fetched once per (repo, pr) and shared across a run's tasks (the promise
+  // is memoized so concurrent first calls don't each fetch). Keyed by repo#pr so
+  // reusing one adapter across PRs can't inject the wrong diff.
+  private diffCache = new Map<string, Promise<string>>();
 
   private loadDiff(repo: string, pr: string): Promise<string> {
-    if (!this.diffPromise) {
-      this.diffPromise = fetchPrDiff(repo, pr).catch((error) => {
+    const key = `${repo}#${pr}`;
+    let cached = this.diffCache.get(key);
+    if (!cached) {
+      // Retry transient fetch failures (5xx/429/network) before degrading, the
+      // same way the Messages API call is retried.
+      cached = withRetry(() => fetchPrDiff(repo, pr), {
+        maxRetries: this.options.maxRetries,
+        label: `PR diff ${key}`,
+      }).catch((error) => {
         const detail = error instanceof Error ? error.message : String(error);
         console.error(
-          `Could not fetch the PR diff for ${repo}#${pr}; Anthropic exploration ` +
-            `will run without code context. Set GITHUB_TOKEN or authenticate gh. (${detail})`,
+          `Could not fetch the PR diff for ${key}; Anthropic exploration will run ` +
+            `without code context. Set GITHUB_TOKEN or authenticate gh. (${detail})`,
         );
         return "";
       });
+      this.diffCache.set(key, cached);
     }
-    return this.diffPromise;
+    return cached;
   }
 
   async runTask(input: TaskExecutionInput): Promise<TaskExecutionResult> {
