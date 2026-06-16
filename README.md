@@ -79,7 +79,7 @@ exploration.md + exploration.json + Canvas + optional PR comment
 - `npm`
 - `gh` CLI, authenticated for the target GitHub repo
 - `jq` and `python3` for the skill scripts
-- An exploration backend key for live runs: `CURSOR_API_KEY` (default Cursor Cloud backend) or `ANTHROPIC_API_KEY` (with `--provider anthropic`). An authenticated `gh` or `GITHUB_TOKEN` also lets the Anthropic backend fetch the PR diff for code context; it degrades gracefully without one.
+- An exploration backend key for live runs: `CURSOR_API_KEY` (default Cursor Cloud backend) or `ANTHROPIC_API_KEY` (with `--provider anthropic`). An authenticated `gh` or `GITHUB_TOKEN` also lets the Anthropic backend fetch the PR diff for code context; it degrades gracefully without one. You can persist keys with `quorum auth` (see [Persisting API keys](#persisting-api-keys)) so you don't need to `export` them every shell.
 
 Install dependencies and build:
 
@@ -141,10 +141,13 @@ This fetches findings, scores clusters deterministically, and upserts the synthe
 First set the API key for your backend (Cursor Cloud is the default):
 
 ```bash
-export CURSOR_API_KEY="crsr_..."        # default backend
+quorum auth                    # interactive menu (recommended)
+quorum auth --cursor-key "crsr_..."      # set Cursor Cloud key non-interactively
 # or, for the Anthropic backend:
-export ANTHROPIC_API_KEY="sk-ant-..."
+quorum auth --anthropic-key "sk-ant-..." --provider anthropic
 ```
+
+You can still use environment variables instead of, or to override, the config file (see [Persisting API keys](#persisting-api-keys) for the full resolution order).
 
 Generate the exploration DAG, report shell, and Canvas without making any cloud or GitHub calls:
 
@@ -189,6 +192,35 @@ Set the default with the `QUORUM_PROVIDER` environment variable. Each backend ha
 
 The Anthropic backend is **code-aware**: it fetches the pull request's unified diff and injects it as the agent's view of the code (capped at 200k characters, read-only — it never edits, commits, or pushes). When the diff cannot be fetched it falls back to a "no code context" note and flags missing evidence rather than guessing, so authenticate `gh` or set `GITHUB_TOKEN` for best results.
 
+### Persisting API keys
+
+`quorum auth` saves API keys and the default provider to a config file so you don't need to `export` them in every shell. The file lives at:
+
+```text
+$XDG_CONFIG_HOME/quorum/credentials.json    (or ~/.config/quorum/credentials.json)
+```
+
+It is created with mode `0o600` and is never committed. Override the path with the `QUORUM_CONFIG` environment variable.
+
+API key resolution order (highest precedence first):
+
+1. `--api-key` flag on the command line
+2. `CURSOR_API_KEY` / `ANTHROPIC_API_KEY` environment variable
+3. Persisted config file (set via `quorum auth`)
+
+The default provider resolves the same way: `--provider` flag > `QUORUM_PROVIDER` env var > config file > `cursor`.
+
+```bash
+quorum auth                           # interactive menu (recommended)
+quorum auth --cursor-key "crsr_..."   # set Cursor Cloud key non-interactively
+quorum auth --anthropic-key "sk-ant-..." --provider anthropic
+quorum auth --provider anthropic      # change only the default provider
+quorum auth --show                    # print masked values
+quorum auth --clear                   # remove all stored keys
+```
+
+`quorum setup` reads the config file too, so it reports keys as "set" whether they come from the environment or the config file.
+
 Open or regenerate a Canvas from an existing run:
 
 ```bash
@@ -230,6 +262,7 @@ Useful options:
 
 ```bash
 quorum setup                 Check prerequisites, backend keys, and skill install.
+quorum auth                  Persist API keys / default provider to a config file.
 quorum eval [--log-dir DIR]  Summarize past run logs (task outcomes, durations).
 quorum run-dag --dag dag.json --out DIR --repo OWNER/REPO   Run a saved DAG directly.
 ```

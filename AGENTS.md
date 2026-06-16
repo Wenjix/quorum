@@ -34,6 +34,9 @@ Single Node.js/TypeScript CLI — no server, no watch mode.
   an authenticated `gh` CLI. The Anthropic backend also fetches the PR diff for code context, so
   `GITHUB_TOKEN`/`gh` auth improves it but is non-fatal if missing. Without credentials the runner
   still completes, recording per-task `ERROR`/`SKIPPED` instead of crashing.
+- **Persisting API keys** — `quorum auth` saves `CURSOR_API_KEY` / `ANTHROPIC_API_KEY` / `QUORUM_PROVIDER`
+  to `~/.config/quorum/credentials.json` (0o600) so you don't `export` them every shell. Key resolution
+  order: `--api-key` flag > process env > config file. Override the file path with `QUORUM_CONFIG`.
 - Run artifacts are written under `.quorum/` (gitignored).
 
 ## Cursor Cloud

@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { execFile } from "node:child_process";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
+import * as readline from "node:readline/promises";
 import { basename, dirname, join } from "node:path";
 import { promisify } from "node:util";
 import { AnthropicAdapter } from "./adapters/anthropic.js";
@@ -11,6 +12,13 @@ import {
   writeCanvas,
 } from "./canvas.js";
 import { parseClusterIds, parseScoredClusters, selectClusters } from "./clusters.js";
+import {
+  credentialsFilePath,
+  loadCredentials,
+  maskSecret,
+  saveCredentials,
+} from "./config.js";
+import type { Credentials } from "./config.js";
 import { CursorCloudAdapter } from "./cursor-cloud-adapter.js";
 import { parseDag } from "./dag.js";
 import { upsertExplorationComment } from "./github.js";
@@ -92,6 +100,10 @@ async function main(): Promise<void> {
   }
   if (parsed.command === "setup") {
     await setupCommand();
+    return;
+  }
+  if (parsed.command === "auth") {
+    await authCommand(parsed);
     return;
   }
   if (parsed.command === "eval") {
@@ -260,8 +272,10 @@ function runnerContext(
   canvasMirrorPath: string | undefined,
 ): RunnerContext {
   const provider = resolveProvider(parsed);
+  const creds = loadCredentials();
   const apiKey = flag(parsed, "api-key")
-    ?? (provider === "anthropic" ? process.env.ANTHROPIC_API_KEY : process.env.CURSOR_API_KEY);
+    ?? (provider === "anthropic" ? process.env.ANTHROPIC_API_KEY : process.env.CURSOR_API_KEY)
+    ?? (provider === "anthropic" ? creds.ANTHROPIC_API_KEY : creds.CURSOR_API_KEY);
   return {
     repo,
     pr,
@@ -283,7 +297,10 @@ function runnerContext(
 }
 
 function resolveProvider(parsed: ParsedArgs): "cursor" | "anthropic" {
-  const provider = flag(parsed, "provider") ?? process.env.QUORUM_PROVIDER ?? "cursor";
+  const provider = flag(parsed, "provider")
+    ?? process.env.QUORUM_PROVIDER
+    ?? loadCredentials().QUORUM_PROVIDER
+    ?? "cursor";
   return provider === "anthropic" ? "anthropic" : "cursor";
 }
 
@@ -527,14 +544,15 @@ async function setupCommand(): Promise<void> {
     checks.push({ name: "python3", ok: false, help: "Install from https://python.org" });
   }
 
-  // API keys
-  const cursorKey = !!process.env.CURSOR_API_KEY;
-  const anthropicKey = !!process.env.ANTHROPIC_API_KEY;
+  // API keys — resolve from env OR the persisted config file (see `quorum auth`).
+  const creds = loadCredentials();
+  const cursorKey = !!process.env.CURSOR_API_KEY || !!creds.CURSOR_API_KEY;
+  const anthropicKey = !!process.env.ANTHROPIC_API_KEY || !!creds.ANTHROPIC_API_KEY;
   const githubToken = !!process.env.GITHUB_TOKEN || !!process.env.GH_TOKEN;
   checks.push({
     name: `CURSOR_API_KEY (${cursorKey ? "set" : "not set"})`,
     ok: cursorKey || anthropicKey,
-    help: "Set CURSOR_API_KEY for Cursor Cloud or ANTHROPIC_API_KEY for Anthropic",
+    help: "Run `quorum auth` to persist a key, or set CURSOR_API_KEY / ANTHROPIC_API_KEY",
   });
   checks.push({
     name: `GITHUB_TOKEN (${githubToken ? "set" : "not set"}, optional)`,
@@ -580,6 +598,200 @@ async function dirExists(path: string): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+// ---- auth command ----
+
+/**
+ * Persist API keys / default provider to a config file so users don't have to
+ * `export` them in every shell. Precedence at run time remains:
+ *   --api-key flag  >  process.env  >  config file
+ *
+ * Modes:
+ *   `quorum auth`                    interactive menu
+ *   `quorum auth --cursor-key K`     set CURSOR_API_KEY non-interactively
+ *   `quorum auth --anthropic-key K`  set ANTHROPIC_API_KEY non-interactively
+ *   `quorum auth --provider P`       set default provider (cursor|anthropic)
+ *   `quorum auth --show`             print masked values
+ *   `quorum auth --clear`            remove all stored keys
+ */
+async function authCommand(parsed: ParsedArgs): Promise<void> {
+  if (hasFlag(parsed, "show")) {
+    printCredentials();
+    return;
+  }
+  if (hasFlag(parsed, "clear")) {
+    saveCredentials({});
+    console.log("Cleared all stored credentials.");
+    console.log(`  File retained (now empty): ${credentialsFilePath()}`);
+    return;
+  }
+
+  const cursorKey = flag(parsed, "cursor-key");
+  const anthropicKey = flag(parsed, "anthropic-key");
+  const provider = flag(parsed, "provider");
+
+  if (cursorKey === "true") throw new Error("Missing --cursor-key.");
+  if (anthropicKey === "true") throw new Error("Missing --anthropic-key.");
+  if (provider === "true") throw new Error("Missing --provider.");
+
+  const hasSetValue =
+    cursorKey !== undefined ||
+    anthropicKey !== undefined ||
+    provider !== undefined;
+
+  if (hasSetValue) {
+    const creds = { ...loadCredentials() };
+    if (cursorKey !== undefined) {
+      creds.CURSOR_API_KEY = cursorKey;
+    }
+    if (anthropicKey !== undefined) {
+      creds.ANTHROPIC_API_KEY = anthropicKey;
+    }
+    if (provider !== undefined) {
+      if (provider !== "cursor" && provider !== "anthropic") {
+        throw new Error('--provider must be "cursor" or "anthropic".');
+      }
+      creds.QUORUM_PROVIDER = provider;
+    }
+    saveCredentials(creds);
+    printSavedSummary(creds);
+    return;
+  }
+
+  await interactiveAuth();
+}
+
+function printCredentials(): void {
+  const creds = loadCredentials();
+  console.log(`Credentials file: ${credentialsFilePath()}\n`);
+  console.log(`  CURSOR_API_KEY    ${maskSecret(creds.CURSOR_API_KEY)}`);
+  console.log(`  ANTHROPIC_API_KEY ${maskSecret(creds.ANTHROPIC_API_KEY)}`);
+  console.log(`  QUORUM_PROVIDER   ${creds.QUORUM_PROVIDER ?? "cursor (default)"}`);
+}
+
+function printSavedSummary(creds: Credentials): void {
+  console.log(`\nSaved to ${credentialsFilePath()} (mode 600)\n`);
+  console.log(`  CURSOR_API_KEY    ${maskSecret(creds.CURSOR_API_KEY)}`);
+  console.log(`  ANTHROPIC_API_KEY ${maskSecret(creds.ANTHROPIC_API_KEY)}`);
+  console.log(`  QUORUM_PROVIDER   ${creds.QUORUM_PROVIDER ?? "cursor (default)"}`);
+}
+
+async function interactiveAuth(): Promise<void> {
+  let creds = { ...loadCredentials() };
+  while (true) {
+    console.log("\nQuorum credentials\n");
+    console.log(`  CURSOR_API_KEY    ${maskSecret(creds.CURSOR_API_KEY)}`);
+    console.log(`  ANTHROPIC_API_KEY ${maskSecret(creds.ANTHROPIC_API_KEY)}`);
+    console.log(`  Default provider  ${creds.QUORUM_PROVIDER ?? "cursor (default)"}\n`);
+    console.log("Choose an action:");
+    console.log("  1) Set Cursor Cloud key     (CURSOR_API_KEY)");
+    console.log("  2) Set Anthropic key        (ANTHROPIC_API_KEY)");
+    console.log("  3) Set default provider");
+    console.log("  4) Clear all stored keys");
+    console.log("  5) Exit\n");
+
+    const choice = (await ask("Action [1-5]: ")).trim();
+    if (choice === "1") {
+      const key = (await askHidden("Enter CURSOR_API_KEY (input hidden): ")).trim();
+      if (key) {
+        creds.CURSOR_API_KEY = key;
+        saveCredentials(creds);
+        console.log(`  Saved. CURSOR_API_KEY ${maskSecret(key)}`);
+      } else {
+        console.log("  Skipped (empty).");
+      }
+    } else if (choice === "2") {
+      const key = (await askHidden("Enter ANTHROPIC_API_KEY (input hidden): ")).trim();
+      if (key) {
+        creds.ANTHROPIC_API_KEY = key;
+        saveCredentials(creds);
+        console.log(`  Saved. ANTHROPIC_API_KEY ${maskSecret(key)}`);
+      } else {
+        console.log("  Skipped (empty).");
+      }
+    } else if (choice === "3") {
+      const p = (await ask("Default provider (cursor/anthropic): ")).trim();
+      if (p === "cursor" || p === "anthropic") {
+        creds.QUORUM_PROVIDER = p;
+        saveCredentials(creds);
+        console.log(`  Saved. Default provider set to ${p}.`);
+      } else {
+        console.log('  Invalid. Use "cursor" or "anthropic".');
+      }
+    } else if (choice === "4") {
+      const confirm = (await ask("Clear ALL stored keys? [y/N]: ")).trim().toLowerCase();
+      if (confirm === "y" || confirm === "yes") {
+        creds = {};
+        saveCredentials(creds);
+        console.log("  Cleared all stored credentials.");
+      } else {
+        console.log("  Cancelled.");
+      }
+    } else if (choice === "5") {
+      console.log("Bye.");
+      return;
+    } else {
+      console.log("  Invalid choice. Enter a number 1-5.");
+    }
+  }
+}
+
+/** Read a line of visible input from stdin. */
+async function ask(question: string): Promise<string> {
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  try {
+    return await rl.question(question);
+  } finally {
+    rl.close();
+  }
+}
+
+/**
+ * Read a line of input without echoing characters (for secrets).
+ * Falls back to visible readline input when stdin is not a TTY (pipes, CI).
+ */
+async function askHidden(question: string): Promise<string> {
+  const stdin = process.stdin;
+  if (!stdin.isTTY) {
+    return ask(question);
+  }
+  process.stdout.write(question);
+  return new Promise<string>((resolve) => {
+    const wasRaw = stdin.isRaw;
+    stdin.setRawMode(true);
+    stdin.resume();
+    stdin.setEncoding("utf8");
+    let value = "";
+    const onData = (chunk: string): void => {
+      for (const ch of chunk) {
+        const code = ch.charCodeAt(0);
+        if (ch === "\r" || ch === "\n") {
+          cleanup();
+          process.stdout.write("\n");
+          resolve(value);
+          return;
+        }
+        if (code === 3) {
+          // Ctrl-C
+          cleanup();
+          process.stdout.write("\n^C\n");
+          process.exit(130);
+        } else if (code === 127 || code === 8) {
+          // Backspace / Delete
+          if (value.length > 0) value = value.slice(0, -1);
+        } else if (code >= 32) {
+          value += ch;
+        }
+      }
+    };
+    const cleanup = (): void => {
+      stdin.removeListener("data", onData);
+      stdin.pause();
+      if (stdin.isTTY) stdin.setRawMode(wasRaw);
+    };
+    stdin.on("data", onData);
+  });
 }
 
 // ---- eval command ----
@@ -744,6 +956,7 @@ function printHelp(): void {
   quorum post-pr https://github.com/OWNER/REPO/pull/N [options]
   quorum canvas .quorum/runs/run-id
   quorum setup
+  quorum auth [--cursor-key K | --anthropic-key K | --provider P | --show | --clear]
   quorum eval [--log-dir .quorum/log]
   quorum explore --repo OWNER/REPO --pr N --scored clusters.scored.json [options]
   quorum run-dag --dag dag.json --out .quorum/runs/run-id --repo OWNER/REPO [options]
@@ -756,6 +969,7 @@ Commands:
   post-pr             Run exploration and upsert the PR exploration comment.
   canvas              Regenerate or open a Canvas from a saved run directory.
   setup               Validate prerequisites (Node, gh, jq, python3, API keys, skills).
+  auth                Persist API keys / default provider to a config file (no more export).
   eval                Compute reviewer precision and success stats from run logs.
 
 Options:
@@ -781,9 +995,17 @@ Environment:
   ANTHROPIC_API_KEY            Anthropic API key (required for --provider anthropic).
   GITHUB_TOKEN                 GitHub API token (falls back to gh CLI).
   QUORUM_PROVIDER              Default: cursor. Set to anthropic for direct Anthropic API.
+  QUORUM_CONFIG                Override the credentials file path (default:
+                               $XDG_CONFIG_HOME/quorum/credentials.json or
+                               ~/.config/quorum/credentials.json).
   QUORUM_MODEL_HIGH            Model for HIGH complexity tasks.
   QUORUM_MODEL_MED             Model for MED complexity tasks.
   QUORUM_MODEL_LOW             Model for LOW complexity tasks.
+
+API key resolution order (--api-key > env > config file):
+  1. --api-key flag
+  2. CURSOR_API_KEY / ANTHROPIC_API_KEY environment variable
+  3. Persisted config file (set via 'quorum auth')
 `);
 }
 
