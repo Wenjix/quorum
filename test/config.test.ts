@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { spawnSync, type SpawnSyncReturns } from "node:child_process";
+import { chmodSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, test } from "node:test";
@@ -11,6 +12,14 @@ function setConfigPath(filename = "credentials.json"): string {
   const path = join(tempDir, filename);
   process.env.QUORUM_CONFIG = path;
   return path;
+}
+
+function runCli(args: string[]): SpawnSyncReturns<string> {
+  return spawnSync(process.execPath, [join(process.cwd(), "dist", "src", "cli.js"), ...args], {
+    cwd: process.cwd(),
+    encoding: "utf8",
+    env: { ...process.env },
+  }) as SpawnSyncReturns<string>;
 }
 
 beforeEach(() => {
@@ -116,11 +125,42 @@ describe("saveCredentials", () => {
     assert.equal(mode, 0o600);
   });
 
+  test("repairs loose permissions on existing credentials file", () => {
+    const path = setConfigPath();
+    writeFileSync(path, JSON.stringify({ CURSOR_API_KEY: "old" }));
+    chmodSync(path, 0o644);
+    saveCredentials({ CURSOR_API_KEY: "new" });
+    const mode = statSync(path).mode & 0o777;
+    assert.equal(mode, 0o600);
+    assert.equal(JSON.parse(readFileSync(path, "utf8")).CURSOR_API_KEY, "new");
+  });
+
   test("updates the in-memory cache", () => {
     setConfigPath();
     saveCredentials({ CURSOR_API_KEY: "cached" });
     // Without clearing the cache, loadCredentials must reflect the saved value.
     assert.equal(loadCredentials().CURSOR_API_KEY, "cached");
+  });
+});
+
+describe("auth command", () => {
+  test("rejects missing values for non-interactive setter flags", () => {
+    for (const flagName of ["cursor-key", "anthropic-key", "provider"]) {
+      setConfigPath(`${flagName}.json`);
+      const result = runCli(["auth", `--${flagName}`]);
+      assert.notEqual(result.status, 0);
+      assert.match(result.stderr, new RegExp(`Missing --${flagName}`));
+    }
+  });
+
+  test("writes credentials non-interactively", () => {
+    const path = setConfigPath("cli-credentials.json");
+    const result = runCli(["auth", "--cursor-key", "sk-cli", "--provider", "anthropic"]);
+    assert.equal(result.status, 0, result.stderr);
+    const raw = JSON.parse(readFileSync(path, "utf8"));
+    assert.equal(raw.CURSOR_API_KEY, "sk-cli");
+    assert.equal(raw.QUORUM_PROVIDER, "anthropic");
+    assert.equal(statSync(path).mode & 0o777, 0o600);
   });
 });
 

@@ -631,20 +631,24 @@ async function authCommand(parsed: ParsedArgs): Promise<void> {
   const anthropicKey = flag(parsed, "anthropic-key");
   const provider = flag(parsed, "provider");
 
+  if (cursorKey === "true") throw new Error("Missing --cursor-key.");
+  if (anthropicKey === "true") throw new Error("Missing --anthropic-key.");
+  if (provider === "true") throw new Error("Missing --provider.");
+
   const hasSetValue =
-    (cursorKey !== undefined && cursorKey !== "true") ||
-    (anthropicKey !== undefined && anthropicKey !== "true") ||
-    (provider !== undefined && provider !== "true");
+    cursorKey !== undefined ||
+    anthropicKey !== undefined ||
+    provider !== undefined;
 
   if (hasSetValue) {
     const creds = { ...loadCredentials() };
-    if (cursorKey !== undefined && cursorKey !== "true") {
+    if (cursorKey !== undefined) {
       creds.CURSOR_API_KEY = cursorKey;
     }
-    if (anthropicKey !== undefined && anthropicKey !== "true") {
+    if (anthropicKey !== undefined) {
       creds.ANTHROPIC_API_KEY = anthropicKey;
     }
-    if (provider !== undefined && provider !== "true") {
+    if (provider !== undefined) {
       if (provider !== "cursor" && provider !== "anthropic") {
         throw new Error('--provider must be "cursor" or "anthropic".');
       }

@@ -1,6 +1,6 @@
-import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 
 export interface Credentials {
   CURSOR_API_KEY?: string;
@@ -59,7 +59,8 @@ export function loadCredentials(): Credentials {
  */
 export function saveCredentials(creds: Credentials): void {
   const path = credentialsFilePath();
-  mkdirSync(dirname(path), { recursive: true });
+  const dir = dirname(path);
+  mkdirSync(dir, { recursive: true });
   const compact: Record<string, string> = {};
   for (const key of ALLOWED_KEYS) {
     const value = creds[key];
@@ -67,7 +68,27 @@ export function saveCredentials(creds: Credentials): void {
       compact[key] = value;
     }
   }
-  writeFileSync(path, `${JSON.stringify(compact, null, 2)}\n`, "utf8");
+  const tempPath = join(dir, `.${basename(path)}.${process.pid}.${Date.now()}.tmp`);
+  writeFileSync(tempPath, `${JSON.stringify(compact, null, 2)}\n`, {
+    encoding: "utf8",
+    flag: "wx",
+    mode: 0o600,
+  });
+  try {
+    chmodSync(tempPath, 0o600);
+  } catch {
+    // Best-effort: chmod can fail on Windows or non-POSIX filesystems.
+  }
+  try {
+    renameSync(tempPath, path);
+  } catch (error) {
+    try {
+      unlinkSync(tempPath);
+    } catch {
+      // Best-effort cleanup for failed replacement writes.
+    }
+    throw error;
+  }
   try {
     chmodSync(path, 0o600);
   } catch {
