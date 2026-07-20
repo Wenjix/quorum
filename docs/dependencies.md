@@ -2,19 +2,22 @@
 
 ## npm `overrides` (security pins)
 
-`@cursor/sdk@1.0.18` pulls transitive dependencies with `npm audit` findings and
-has no upstream fix yet, so `package.json` pins patched versions via `overrides`:
+`@cursor/sdk@1.0.23` still pulls a transitive dependency with `npm audit`
+findings and has no compatible upstream fix yet, so `package.json` pins a
+patched version via `overrides`:
 
 | Override | Pinned | Consumer (chain) | Scope / why safe | Remove when |
 |----------|--------|------------------|------------------|-------------|
-| `tar` | `^7.5.10` | `sqlite3 → node-gyp@8 / cacache` | **install-time only** — not in the runtime path; used to build sqlite3's native addon | `@cursor/sdk` updates `sqlite3`/`node-gyp` past `tar` 6 |
-| `undici` | `^6.24.0` | `@connectrpc/connect-node@1.7.0` | runtime-inert on Node ≥18 (see below) | connect-node / `@cursor/sdk` ship `undici` ≥6 |
-| `@tootallnate/once` | `^2.0.1` | optional install tooling (`http-proxy-agent`) | optional, install-time | transitive bump |
+| `undici` | `^6.27.0` | `@connectrpc/connect-node@1.7.0` | runtime-inert on Node ≥18 (see below) | `@cursor/sdk` moves to ConnectRPC 2 or otherwise stops resolving vulnerable Undici 5 |
 
-**Verified (2026-06):** a clean `npm ci` on **Node 26** — which has no `sqlite3`
-prebuilt, so it forces the native source build that actually exercises `tar` —
-succeeds with `tar@7` building the addon; `npm audit --audit-level=moderate`
-(against npmjs) → **0 vulnerabilities**.
+`@cursor/sdk@1.0.19` removed its `sqlite3` dependency. At 1.0.23, neither
+`sqlite3` nor its install-time `tar` / `@tootallnate/once` chains are present,
+so their former overrides have been removed.
+
+**Verified (2026-07):** a clean install resolves `@cursor/sdk@1.0.23`,
+`@connectrpc/connect-node@1.7.0`, and `undici@6.27.0`; `npm ls` contains no
+`sqlite3`, `node-gyp`, `tar`, or `@tootallnate/once`; and
+`npm audit --audit-level=moderate` (against npmjs) reports **0 vulnerabilities**.
 
 ### Why `undici` 5→6 is runtime-safe
 `@connectrpc/connect-node@1.7.0`'s only use of `undici` is a `Headers` polyfill
@@ -27,12 +30,12 @@ if (major < 18) {
 }
 ```
 
-This repo requires Node ≥22, so that branch never runs (the global `fetch` /
+This repo requires Node ≥22.13, so that branch never runs (the global `fetch` /
 `Headers` are used). `undici@6` imports cleanly on Node ≥18.17, and nothing else
 consumes it — so the major bump is inert at runtime here.
 
 ### Do not
-- Delete or loosen these overrides (re-introduces the audit findings).
+- Delete or loosen the Undici override (re-introduces the audit findings).
 - Regenerate `package-lock.json` against `registry.npmmirror.com`.
 
 Removal is tracked in #5.

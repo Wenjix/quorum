@@ -25,17 +25,15 @@
     "prepublishOnly": "npm run build && npm run build:skill && npm test"
   },
   "engines": {
-    "node": ">=22"
+    "node": ">=22.13"
   },
   "dependencies": {
-    "@cursor/sdk": "^1.0.18"
+    "@cursor/sdk": "^1.0.23"
   },
   "overrides": {
-    "@tootallnate/once": "^2.0.1",
-    "tar": "^7.5.10",
-    "undici": "^6.24.0"
+    "undici": "^6.27.0"
   },
-  "overridesNote": "Security pins for @cursor/sdk transitive deps (npm audit -> 0). Do not remove until @cursor/sdk > 1.0.18 bumps them. Rationale: docs/dependencies.md (tracked in #5).",
+  "overridesNote": "Security pin for @cursor/sdk's transitive undici dependency (npm audit -> 0). Do not remove until upstream no longer resolves a vulnerable undici version. Rationale: docs/dependencies.md (tracked in #5).",
   "devDependencies": {
     "@types/node": "^25.0.0",
     "typescript": "^6.0.3"

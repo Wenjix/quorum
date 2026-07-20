@@ -75,7 +75,7 @@ exploration.md + exploration.json + Canvas + optional PR comment
 
 ### Requirements
 
-- Node.js 22 or newer
+- Node.js 22.13 or newer
 - `npm`
 - `gh` CLI, authenticated for the target GitHub repo
 - `jq` and `python3` for the skill scripts
