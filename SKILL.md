@@ -1,6 +1,6 @@
 ---
 name: quorum
-description: Synthesize, deduplicate, prioritize, and explore automated code-review findings on GitHub pull requests. Use whenever the user mentions Bugbot, Copilot code review, Devin reviewer, CodeRabbit or other review bots, bot review triage, duplicate or noisy review comments, reviewer consensus or quorum, Quorum DAG exploration, Cursor Cloud root-cause analysis, pattern sweeps, or asks to summarize, dedupe, cluster, rank, synthesize, or explore automated PR feedback — even if they do not name a specific tool. Fetches bot review comments via gh, clusters same-root-cause findings, computes reviewer quorum deterministically, posts one idempotent synthesis comment with machine-readable JSON, and can launch the Quorum Cloud DAG runner for root-cause and pattern-sweep follow-up.
+description: Synthesize, deduplicate, and prioritize automated code-review findings on GitHub pull requests. Use whenever the user mentions Bugbot, Copilot code review, Devin reviewer, or other review bots, bot review triage, duplicate or noisy review comments, reviewer consensus or quorum, Quorum DAG exploration, root-cause analysis or pattern sweeps on PR findings, or asks to summarize, dedupe, cluster, rank, synthesize, or explore automated PR feedback — even if they do not name a specific tool.
 ---
 
 # Quorum — bot review synthesis
@@ -18,10 +18,10 @@ Core design rules — do not violate these:
 
 ## Preconditions
 
-- `gh` CLI authenticated with access to the repo (`gh auth status`), plus `jq` and `python3`.
+- `gh` CLI authenticated with access to the repo (`gh auth status`), plus `jq` and Python 3 (`python3`; plain `python` on Windows — substitute in the commands below).
 - A target PR. Use the number/URL the user gave; otherwise resolve from the current branch with `gh pr view --json number,headRepository,url`. If ambiguous, ask.
 
-Work in a scratch directory (e.g. `/tmp/quorum-<pr>/`) so intermediate JSON doesn't pollute the repo.
+Work in a scratch directory (e.g. `/tmp/quorum-<pr>/`, or your harness's scratchpad directory) so intermediate JSON doesn't pollute the repo.
 
 ## Step 1 — Fetch findings
 
@@ -76,12 +76,14 @@ To post for real, drop `--dry-run`. The script:
 Summarize in conversation: findings → clusters, quorum tiers, the top finding. Then offer the natural next actions:
 
 1. **Fix now** — implement fixes for quorum ≥ 2 clusters in this session.
-2. **Cloud DAG exploration** — run Cursor Cloud root-cause and pattern-sweep agents with `quorum run-pr PR_URL` (or `quorum plan-pr PR_URL` first for a no-cloud dry plan).
+2. **Cloud DAG exploration** — run root-cause and pattern-sweep agents on the cloud DAG runner with `quorum run-pr PR_URL` (or `quorum plan-pr PR_URL` first for a no-cloud dry plan).
 3. **Log the run** for the eval flywheel (below).
 
-## Phase 2 — Cloud DAG shortcuts
+## Step 6 — Cloud DAG follow-up (optional)
 
 If the repo has this Quorum CLI built and linked, prefer the shortcut commands over hand-writing the long `explore --repo --pr --scored` form.
+
+`run-pr` and `post-pr` call the exploration backend and need its key — `CURSOR_API_KEY` (the default backend) or `ANTHROPIC_API_KEY` with `--provider anthropic` / `QUORUM_PROVIDER=anthropic`. `quorum auth` persists keys to a config file so they don't need exporting each shell. `plan-pr` and `canvas` call no backend and need no key.
 
 ```bash
 quorum plan-pr https://github.com/OWNER/REPO/pull/N
@@ -90,8 +92,8 @@ quorum post-pr https://github.com/OWNER/REPO/pull/N
 quorum canvas .quorum/runs/<run-id>
 ```
 
-- `plan-pr` recovers the embedded `clusters.scored.json` from the existing `<!-- quorum:synthesis -->` PR comment, writes the DAG/report/Canvas, and does not call Cursor Cloud.
-- `run-pr` runs the Cursor Cloud DAG and writes local artifacts/Canvas, but does not post an exploration comment by default.
+- `plan-pr` recovers the embedded `clusters.scored.json` from the existing `<!-- quorum:synthesis -->` PR comment, writes the DAG/report/Canvas, and does not call the cloud backend.
+- `run-pr` runs the cloud DAG and writes local artifacts/Canvas, but does not post an exploration comment by default.
 - `post-pr` runs the DAG and upserts the PR exploration comment.
 - Add `--scored path/to/clusters.scored.json` if no synthesis comment exists yet or the user has a local scored file.
 - Add `--min-quorum 1` when testing on PRs where all findings are single-reviewer findings.
