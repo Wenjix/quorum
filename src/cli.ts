@@ -471,7 +471,7 @@ async function triagePrCommand(parsed: ParsedArgs): Promise<void> {
   const scoredPath = join(tmpDir, "clusters.scored.json");
 
   // Step 1: Synthesize
-  console.log("=== Phase 1: Synthesis ===");
+  console.log("=== Synthesis ===");
   const synthOverrides: Record<string, string> = {
     out: flag(parsed, "synth-out") ?? tmpDir,
     "out-file": scoredPath,
@@ -484,7 +484,7 @@ async function triagePrCommand(parsed: ParsedArgs): Promise<void> {
   await synthesizeCommand(synthParsed);
 
   // Step 2: Explore
-  console.log("\n=== Phase 2: Exploration ===");
+  console.log("\n=== Exploration ===");
   const runId = createRunId(ref.repo, ref.pr);
   const outDir = flag(parsed, "out") ?? join(".quorum", "runs", runId);
   const scoredDoc = parseScoredClusters(await readJson(scoredPath));
@@ -962,7 +962,7 @@ function printHelp(): void {
   quorum run-dag --dag dag.json --out .quorum/runs/run-id --repo OWNER/REPO [options]
 
 Commands:
-  synthesize          Run Phase 1 synthesis pipeline (fetch, score, post) without AI clustering.
+  synthesize          Run the synthesis pipeline (fetch, score, post) without AI clustering.
   triage-pr           Run synthesis + exploration end-to-end on a PR.
   plan-pr             Generate DAG/Canvas without calling cloud agents.
   run-pr              Run Cursor Cloud or Anthropic exploration (no PR comment by default).

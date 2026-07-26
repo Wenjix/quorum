@@ -78,7 +78,7 @@ exploration.md + exploration.json + Canvas + optional PR comment
 - Node.js 22.13 or newer
 - `npm`
 - `gh` CLI, authenticated for the target GitHub repo
-- `jq` and `python3` for the skill scripts
+- `jq` and Python 3 for the skill scripts (`python3`; plain `python` on Windows)
 - An exploration backend key for live runs: `CURSOR_API_KEY` (default Cursor Cloud backend) or `ANTHROPIC_API_KEY` (with `--provider anthropic`). An authenticated `gh` or `GITHUB_TOKEN` also lets the Anthropic backend fetch the PR diff for code context; it degrades gracefully without one. You can persist keys with `quorum auth` (see [Persisting API keys](#persisting-api-keys)) so you don't need to `export` them every shell.
 
 Install dependencies and build:
@@ -126,9 +126,9 @@ Then open an agent session on a PR branch and ask:
 Use Quorum to triage the bot reviews on this PR.
 ```
 
-The skill posts a Quorum synthesis comment that embeds `clusters.scored.json`. The Phase 2 runner can recover that JSON from the PR automatically, so you usually do not need to pass a local `--scored` path.
+The skill posts a Quorum synthesis comment that embeds `clusters.scored.json`. The cloud exploration runner can recover that JSON from the PR automatically, so you usually do not need to pass a local `--scored` path.
 
-You can also run Phase 1 directly from the CLI without the skill:
+You can also run the synthesis step directly from the CLI without the skill:
 
 ```bash
 quorum synthesize OWNER/REPO#123
@@ -167,7 +167,7 @@ Run live exploration and upsert the PR exploration comment:
 quorum post-pr https://github.com/OWNER/REPO/pull/123
 ```
 
-Synthesize and explore in one shot (Phase 1 then Phase 2):
+Synthesize and explore in one shot (synthesis then exploration):
 
 ```bash
 quorum triage-pr https://github.com/OWNER/REPO/pull/123
@@ -329,9 +329,12 @@ Quorum treats reviewer consensus as signal, not truth.
 
 ```text
 SKILL.md                 Skill instructions for review synthesis
-quorum.skill             Packaged Claude/Cursor skill
+quorum.skill             Packaged Claude/Cursor skill (rebuild: npm run build:skill)
+scripts/                 Skill scripts: fetch findings, validate/score clusters, post synthesis
+references/              Clustering rubric the skill's judge follows
 src/                     TypeScript cloud runner
 test/                    Node test suite
+docs/                    Dependency notes and README assets
 package.json             Build, test, and dependency metadata
 ```
 
@@ -364,6 +367,12 @@ Build the CLI:
 
 ```bash
 npm run build
+```
+
+Repackage `quorum.skill` after changing `SKILL.md`, `scripts/`, or `references/` (commit the changes first — it packages from `HEAD`):
+
+```bash
+npm run build:skill
 ```
 
 After building, the CLI entrypoint is:

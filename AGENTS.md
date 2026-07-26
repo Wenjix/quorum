@@ -39,6 +39,11 @@ Single Node.js/TypeScript CLI — no server, no watch mode.
 - **Persisting API keys** — `quorum auth` saves `CURSOR_API_KEY` / `ANTHROPIC_API_KEY` / `QUORUM_PROVIDER`
   to `~/.config/quorum/credentials.json` (0o600) so you don't `export` them every shell. Key resolution
   order: `--api-key` flag > process env > config file. Override the file path with `QUORUM_CONFIG`.
+- **Repackaging the skill:** `quorum.skill` is the committed, installable zip of `SKILL.md` +
+  `scripts/` + `references/` — the README's install steps unzip it, so a stale zip ships stale
+  scripts. After changing any of those files: commit the change, run `npm run build:skill`
+  (packages from `HEAD` via `git archive`, keeping LF line endings and exec bits regardless of
+  platform), and commit the refreshed zip.
 - Run artifacts are written under `.quorum/` (gitignored).
 
 ## Cursor Cloud
