@@ -19,7 +19,7 @@
   "scripts": {
     "prebuild": "rm -rf dist",
     "build": "tsc -p tsconfig.json",
-    "build:skill": "rm -f quorum.skill && mkdir -p .skill-build/quorum && cp SKILL.md .skill-build/quorum/ && cp -r scripts references .skill-build/quorum/ && cd .skill-build && zip -r ../quorum.skill quorum/ && cd .. && rm -rf .skill-build && echo 'quorum.skill rebuilt'",
+    "build:skill": "git archive --format=zip --prefix=quorum/ -o quorum.skill HEAD -- SKILL.md scripts references && echo quorum.skill rebuilt from HEAD",
     "test": "npm run build && node --test dist/test/*.test.js",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "prepublishOnly": "npm run build && npm run build:skill && npm test"
