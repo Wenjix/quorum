@@ -42,8 +42,9 @@ Single Node.js/TypeScript CLI — no server, no watch mode.
 - **Repackaging the skill:** `quorum.skill` is the committed, installable zip of `SKILL.md` +
   `scripts/` + `references/` — the README's install steps unzip it, so a stale zip ships stale
   scripts. After changing any of those files: commit the change, run `npm run build:skill`
-  (packages from `HEAD` via `git archive`, keeping LF line endings and exec bits regardless of
-  platform), and commit the refreshed zip.
+  (packages from `HEAD` via `git archive`; `.gitattributes` pins the packaged files to LF so
+  Windows `core.autocrlf` can't inject CRLF, and exec bits come from the index), and commit
+  the refreshed zip.
 - Run artifacts are written under `.quorum/` (gitignored).
 
 ## Cursor Cloud

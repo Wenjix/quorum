@@ -1,0 +1,6 @@
+# quorum.skill is built with `git archive` (npm run build:skill), which applies
+# line-ending conversion from these attributes. The packaged files must stay LF
+# on every platform — CRLF in fetch_findings.sh breaks bash on macOS/Linux.
+SKILL.md text eol=lf
+scripts/** text eol=lf
+references/** text eol=lf
