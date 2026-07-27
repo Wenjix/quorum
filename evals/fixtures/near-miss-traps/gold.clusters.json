@@ -1,0 +1,93 @@
+{
+  "clusters": [
+    {
+      "cluster_id": "g1",
+      "member_ids": ["bugbot-1"],
+      "canonical_title": "Token comparison not timing-safe",
+      "canonical_description": "verify() compares tokens with ===; use crypto.timingSafeEqual to avoid a timing side channel.",
+      "category": "security",
+      "severity": "major",
+      "primary_location": {"file": "src/auth.ts", "start_line": 55, "end_line": 55},
+      "match_type": "singleton",
+      "match_confidence": 1.0,
+      "cross_file": false,
+      "trap": "Same line as devin-1 but a different defect with a different fix — do not merge on co-location."
+    },
+    {
+      "cluster_id": "g2",
+      "member_ids": ["devin-1"],
+      "canonical_title": "Token expiry never checked in verify()",
+      "canonical_description": "An expired token that matches still authenticates; verify() must check expiry.",
+      "category": "security",
+      "severity": "major",
+      "primary_location": {"file": "src/auth.ts", "start_line": 55, "end_line": 55},
+      "match_type": "singleton",
+      "match_confidence": 1.0,
+      "cross_file": false
+    },
+    {
+      "cluster_id": "g3",
+      "member_ids": ["copilot-1"],
+      "canonical_title": "Missing await on save() in importRows",
+      "canonical_description": "importRows returns before the write completes and errors are swallowed.",
+      "category": "error-handling",
+      "severity": "major",
+      "primary_location": {"file": "src/importer.ts", "start_line": 10, "end_line": 10},
+      "match_type": "singleton",
+      "match_confidence": 1.0,
+      "cross_file": false,
+      "trap": "Near-identical wording to devin-2 but an independent defect in a different file — same category, separate fixes."
+    },
+    {
+      "cluster_id": "g4",
+      "member_ids": ["devin-2"],
+      "canonical_title": "Missing await on flush() in exportRows",
+      "canonical_description": "exportRows may report success before buffers are written.",
+      "category": "error-handling",
+      "severity": "major",
+      "primary_location": {"file": "src/exporter.ts", "start_line": 22, "end_line": 22},
+      "match_type": "singleton",
+      "match_confidence": 1.0,
+      "cross_file": false
+    },
+    {
+      "cluster_id": "g5",
+      "member_ids": ["bugbot-2", "copilot-2"],
+      "canonical_title": "TTL unit mismatch: seconds passed where setTimeout expects milliseconds",
+      "canonical_description": "Config supplies TTL in seconds but setTimeout receives it as milliseconds, so cache entries expire ~1000x too fast. Both reviewers describe the same unit mismatch in set().",
+      "category": "logic",
+      "severity": "major",
+      "primary_location": {"file": "src/cache.ts", "start_line": 29, "end_line": 31},
+      "match_type": "same-root-cause",
+      "match_confidence": 0.9,
+      "match_rationale": "Different wording, same defect: the seconds-vs-milliseconds mismatch in the eviction timer.",
+      "single_fix": "Multiply ttl by 1000 (or convert at the config boundary) before passing it to setTimeout in set().",
+      "cross_file": false
+    },
+    {
+      "cluster_id": "g6",
+      "member_ids": ["devin-3"],
+      "canonical_title": "Rename ttl to ttlSeconds for unit clarity",
+      "canonical_description": "Style suggestion to make the expected unit explicit in the parameter name.",
+      "category": "style",
+      "severity": "nit",
+      "primary_location": {"file": "src/cache.ts", "start_line": 31, "end_line": 31},
+      "match_type": "singleton",
+      "match_confidence": 1.0,
+      "cross_file": false,
+      "trap": "Co-located with the g5 functional bug and touches the same concept (units), but is purely stylistic — functional and stylistic findings never merge."
+    },
+    {
+      "cluster_id": "g7",
+      "member_ids": ["copilot-3"],
+      "canonical_title": "Histogram buckets not sorted ascending",
+      "canonical_description": "Prometheus client requires sorted bucket boundaries.",
+      "category": "logic",
+      "severity": "minor",
+      "primary_location": {"file": "src/metrics.ts", "start_line": 77, "end_line": 77},
+      "match_type": "singleton",
+      "match_confidence": 1.0,
+      "cross_file": false
+    }
+  ]
+}

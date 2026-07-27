@@ -1,0 +1,82 @@
+{
+  "clusters": [
+    {
+      "cluster_id": "g1",
+      "member_ids": ["bugbot-1", "devin-1"],
+      "canonical_title": "Object.assign mutates shared DEFAULT_OPTIONS, leaking prefs across requests",
+      "canonical_description": "applyOptions mutates the module-level DEFAULT_OPTIONS via Object.assign, so one request's preferences pollute the defaults seen by later callers; devin observed the downstream symptom in the trip route.",
+      "category": "data-integrity",
+      "severity": "major",
+      "primary_location": {"file": "utils/options.ts", "start_line": 14, "end_line": 14},
+      "match_type": "same-root-cause",
+      "match_confidence": 0.9,
+      "match_rationale": "One flags the mutation site, the other its downstream symptom; both trace to the same shared-object mutation.",
+      "single_fix": "Clone DEFAULT_OPTIONS (spread or structuredClone) before merging user options in applyOptions().",
+      "cross_file": true
+    },
+    {
+      "cluster_id": "g2",
+      "member_ids": ["copilot-1"],
+      "canonical_title": "Missing null check on req.user in profile handler",
+      "canonical_description": "Unauthenticated requests reach the profile handler and crash accessing req.user.id.",
+      "category": "error-handling",
+      "severity": "major",
+      "primary_location": {"file": "api/users.ts", "start_line": 42, "end_line": 42},
+      "match_type": "singleton",
+      "match_confidence": 1.0,
+      "cross_file": false
+    },
+    {
+      "cluster_id": "g3",
+      "member_ids": ["bugbot-2"],
+      "canonical_title": "Missing null check on order.customer for guest checkouts",
+      "canonical_description": "order.customer can be null for guest checkouts; notifyOrder throws on .email.",
+      "category": "error-handling",
+      "severity": "major",
+      "primary_location": {"file": "api/orders.ts", "start_line": 17, "end_line": 17},
+      "match_type": "singleton",
+      "match_confidence": 1.0,
+      "cross_file": false
+    },
+    {
+      "cluster_id": "g4",
+      "member_ids": ["devin-2", "bugbot-3"],
+      "canonical_title": "syncAll has no error handling; failures leave partial state",
+      "canonical_description": "syncAll performs awaited pushes with no try/catch, retry, or rollback — any rejection (e.g. the unhandled await push() at line 103) kills the loop and leaves partial state.",
+      "category": "error-handling",
+      "severity": "major",
+      "primary_location": {"file": "services/sync.ts", "start_line": 95, "end_line": 110},
+      "match_type": "general-specific",
+      "match_confidence": 0.85,
+      "match_rationale": "bugbot's unhandled await is a concrete instance of devin's function-level missing-error-handling finding.",
+      "single_fix": "Wrap syncAll's awaited calls (including push() at line 103) in try/catch with rollback or retry of partial state.",
+      "cross_file": false
+    },
+    {
+      "cluster_id": "g5",
+      "member_ids": ["bugbot-4", "bugbot-5"],
+      "canonical_title": "Off-by-one in page slice drops the last item of every page",
+      "canonical_description": "The slice end index start + pageSize - 1 excludes the final element, returning pageSize-1 items per page. Bugbot re-reported the same defect on a second review pass.",
+      "category": "logic",
+      "severity": "major",
+      "primary_location": {"file": "src/pagination.ts", "start_line": 20, "end_line": 21},
+      "match_type": "within-reviewer-dup",
+      "match_confidence": 0.95,
+      "match_rationale": "Same reviewer re-reported the identical slice off-by-one across review passes.",
+      "single_fix": "Change the slice end index to start + pageSize in page().",
+      "cross_file": false
+    },
+    {
+      "cluster_id": "g6",
+      "member_ids": ["copilot-2"],
+      "canonical_title": "SQL injection via string interpolation in findByName",
+      "canonical_description": "name is interpolated directly into a raw SQL string; use a parameterized query.",
+      "category": "security",
+      "severity": "critical",
+      "primary_location": {"file": "src/db/query.ts", "start_line": 58, "end_line": 58},
+      "match_type": "singleton",
+      "match_confidence": 1.0,
+      "cross_file": false
+    }
+  ]
+}

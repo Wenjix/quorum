@@ -330,6 +330,10 @@ Quorum treats reviewer consensus as signal, not truth.
 ```text
 SKILL.md                 Skill instructions for review synthesis
 quorum.skill             Packaged Claude/Cursor skill
+scripts/                 Skill scripts: fetch, validate/score, post, candidate
+                         blocking, dogfood logging, reviewer reliability
+references/              Clustering rubric (the judge's instructions)
+evals/                   Gold fixtures + clustering eval harness docs
 src/                     TypeScript cloud runner
 test/                    Node test suite
 package.json             Build, test, and dependency metadata
@@ -378,9 +382,11 @@ Quorum is built for dogfooding.
 
 It is not yet a hosted GitHub App. The fastest path is still interactive use: run the skill on a PR, inspect the synthesis, then launch cloud exploration for the quorum-backed findings.
 
+The eval flywheel is in place: `scripts/log_run.sh` snapshots each run with an outcome-labeling stub, `scripts/eval_clustering.py` measures merge precision/recall against gold fixtures in `evals/` (plus confidence calibration and order-stability checks), and `scripts/reviewer_reliability.py` turns labeled logs into per-bot precision, inter-bot error correlation, and calibration data for the validator's confidence gate.
+
 Planned next steps:
 
-- Preserve dogfood logs for reviewer precision analysis.
-- Add richer evaluation around bad merges and false positives.
+- Grow the gold fixture set and calibration data from labeled dogfood logs; fit the confidence gate — and eventually reliability-weighted quorum — from that data instead of priors.
+- Count "reviewed, found nothing" bots in the quorum denominator via review-event data.
 - Add optional fix-draft agents after the explore-only flow is reliable.
 - Package hosted automation through GitHub Actions or a GitHub App.

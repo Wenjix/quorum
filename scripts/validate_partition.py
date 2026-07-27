@@ -5,7 +5,10 @@
      - member_ids form an EXACT partition of finding ids
        (no omissions, no duplicates, no invented ids)
      - schema sanity: required fields, enum values, confidence in [0,1],
-       rationale present on multi-finding clusters
+       rationale AND single_fix present on multi-finding clusters
+       (single_fix is the evidence a merge is real: one sentence naming the
+       concrete change that resolves every member — if the judge cannot
+       articulate it, the findings do not share a root cause)
    On violation: prints each named violation and exits 1 so the agent can fix
    clusters.json and retry.
 
@@ -117,6 +120,12 @@ def validate(findings, doc):
             errors.append(f"{cid}: match_confidence must be a number in [0,1], got {conf!r}")
         if len(mids) > 1 and not (c.get("match_rationale") or "").strip():
             errors.append(f"{cid}: match_rationale is required for clusters of size > 1")
+        if len(mids) > 1 and not (c.get("single_fix") or "").strip():
+            errors.append(
+                f"{cid}: single_fix is required for clusters of size > 1 — state the one "
+                "concrete change that resolves every member; if you cannot write that "
+                "sentence, the findings fail the single-fix test and belong in separate clusters"
+            )
 
     omitted = [fid for fid in fmap if fid not in seen]
     for fid in omitted:

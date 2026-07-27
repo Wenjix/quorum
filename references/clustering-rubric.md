@@ -11,6 +11,8 @@ Two role boundaries, non-negotiable:
 
 Two findings belong in the same cluster **if and only if a single code change would plausibly resolve both.** Same root cause, same fix → same cluster.
 
+The test is not a vibe — you must be able to *write the fix down*. Every multi-finding cluster requires a `single_fix` field: one sentence naming the concrete change that resolves every member (e.g. "Clone DEFAULT_OPTIONS before merging user options in applyOptions()"). If you cannot write that sentence, the merge fails the test by definition — keep the findings separate. The validator rejects multi-finding clusters without it.
+
 ### MERGE when findings describe the same defect even if they are:
 
 - anchored to different lines — one flags where the bug originates, another where it manifests downstream
@@ -41,7 +43,8 @@ Write strict JSON to `clusters.json`. Hard constraints:
 - `severity`: max across members, one of `critical | major | minor | nit`
 - `match_type`: `exact | same-root-cause | general-specific | within-reviewer-dup | singleton`
 - `match_confidence`: 0.0–1.0; use 1.0 for singletons. Multi-finding clusters below 0.7 will be split back into singletons by the validator — that gate is intentional, do not inflate confidence to dodge it.
-- `match_rationale`: one sentence, required for clusters of size > 1.
+- `match_rationale`: one sentence, required for clusters of size > 1 — *why* the findings match.
+- `single_fix`: one sentence, required for clusters of size > 1 — the concrete change that resolves every member. This is the evidence behind the merge; it also seeds the root-cause prompt for Phase 2 exploration.
 
 ```json
 {
@@ -57,6 +60,7 @@ Write strict JSON to `clusters.json`. Hard constraints:
       "match_type": "same-root-cause",
       "match_confidence": 0.9,
       "match_rationale": "one sentence; required for size > 1",
+      "single_fix": "one sentence naming the concrete change; required for size > 1",
       "cross_file": false
     }
   ]
@@ -72,7 +76,7 @@ Write strict JSON to `clusters.json`. Hard constraints:
 - `bugbot-2` @ `utils/options.ts:14` — "Object.assign(DEFAULT_OPTIONS, userOpts) mutates the shared default object; later callers inherit this user's prefs."
 - `devin-4` @ `routes/trip.ts:88` — "Route preferences appear to leak between requests; defaults polluted by prior calls."
 
-→ One fix (clone before assign) resolves both. **MERGE**, primary_location at the mutation site.
+→ One fix (clone before assign) resolves both. **MERGE**, primary_location at the mutation site. `single_fix`: "Clone DEFAULT_OPTIONS (spread or structuredClone) before merging user options at utils/options.ts:14."
 
 **B — do not merge (same category, independent instances):**
 
@@ -86,6 +90,6 @@ Write strict JSON to `clusters.json`. Hard constraints:
 - `devin-2` @ `services/sync.ts` (function-level) — "No error handling in syncAll; any failure leaves partial state."
 - `bugbot-7` @ `services/sync.ts:103` — "await push() can reject and is unhandled."
 
-→ The specific is an instance of the general. **MERGE**, `match_type: "general-specific"`; the description covers the broad gap and cites line 103 as a concrete instance.
+→ The specific is an instance of the general. **MERGE**, `match_type: "general-specific"`; the description covers the broad gap and cites line 103 as a concrete instance. `single_fix`: "Wrap syncAll's awaited calls (including push() at line 103) in try/catch with rollback of partial state."
 
 <!-- Add new worked examples here from dogfood logs: every bad merge you catch in the wild is the next example. -->

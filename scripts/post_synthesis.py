@@ -6,7 +6,10 @@
 - Adds eyes reactions to the original bot comments belonging to quorum >= 2
   clusters (the in-thread cue that another reviewer agrees).
 - Embeds the scored clusters JSON in a collapsed <details> block — the
-  machine-readable surface for downstream agents.
+  machine-readable surface for downstream agents. Big PRs degrade gracefully:
+  pretty JSON -> compact JSON -> slimmed payload -> omitted with a note, so
+  the machine surface survives on exactly the PRs where agents need it most.
+- After posting, fetches the comment back and verifies the marker landed.
 - --minimize collapses non-primary members of multi-finding clusters as
   DUPLICATE (hides other bots' comments: opt-in, ask the user first).
 - --dry-run renders to stdout and lists planned side effects, no gh calls.
@@ -57,7 +60,27 @@ def loc_str(c):
     return f"`{f}`"
 
 
-def render(repo, pr, data, include_json=True):
+def slim_payload(data):
+    """Reduced embed for very large PRs: keeps ids, titles, quorum, and links —
+    enough for downstream agents to act — and drops the long descriptions and
+    per-member metadata that dominate the byte count."""
+    keep = ("cluster_id", "member_ids", "canonical_title", "category", "severity",
+            "match_type", "match_confidence", "single_fix", "quorum", "reviewers",
+            "gate_split_from")
+    return {
+        "generated_at": data.get("generated_at"),
+        "totals": data["totals"],
+        "slim": True,
+        "clusters": [
+            {**{k: c[k] for k in keep if k in c},
+             "members": [{"id": m["id"], "url": m["url"],
+                          "comment_id": m.get("comment_id")} for m in c["members"]]}
+            for c in data["clusters"]
+        ],
+    }
+
+
+def render(repo, pr, data, json_mode="full"):
     totals = data["totals"]
     d = max(totals["reviewer_denominator"], 1)
     clusters = data["clusters"]
@@ -89,6 +112,8 @@ def render(repo, pr, data, include_json=True):
         desc = (c.get("canonical_description") or "").strip()
         if desc and desc != c["canonical_title"]:
             out.append(f"  {desc}")
+        if len(c.get("member_ids", [])) > 1 and (c.get("single_fix") or "").strip():
+            out.append(f"  <sub>single fix: {c['single_fix'].strip()}</sub>")
         if c.get("gate_split_from"):
             out.append(f"  <sub>split from low-confidence merge `{c['gate_split_from']}`</sub>")
     out.append("")
@@ -100,13 +125,25 @@ def render(repo, pr, data, include_json=True):
         )
         out.append("")
 
-    if include_json:
+    if json_mode != "none":
+        payload = slim_payload(data) if json_mode == "slim" else data
+        dumped = (json.dumps(payload, indent=2) if json_mode == "full"
+                  else json.dumps(payload, separators=(",", ":")))
         out.append("<details><summary>clusters.scored.json (machine-readable, for agents)</summary>")
         out.append("")
         out.append("```json")
-        out.append(json.dumps(data, indent=2))
+        out.append(dumped)
         out.append("```")
         out.append("</details>")
+        out.append("")
+        if json_mode == "slim":
+            out.append("<sub>Embedded JSON slimmed to fit the comment size limit "
+                       "(descriptions and per-member metadata trimmed); the full "
+                       "clusters.scored.json is in the local run artifacts.</sub>")
+            out.append("")
+    else:
+        out.append("<sub>JSON payload omitted: comment size limit. "
+                   "See the local run artifacts for clusters.scored.json.</sub>")
         out.append("")
 
     out.append(f"<sub>Quorum · PR {repo}#{pr} · generated {data.get('generated_at', '')}</sub>")
@@ -141,10 +178,16 @@ def main():
         data = json.load(f)
     clusters = data["clusters"]
 
-    body = render(args.repo, args.pr, data)
-    if len(body) > MAX_BODY:
-        body = render(args.repo, args.pr, data, include_json=False)
-        body += "\n<sub>JSON payload omitted: comment size limit. See workflow artifacts/logs.</sub>"
+    # Degrade the embedded JSON gradually instead of dropping it outright:
+    # downstream agents need the machine surface most on exactly the big PRs
+    # that hit the size limit.
+    for json_mode in ("full", "compact", "slim", "none"):
+        body = render(args.repo, args.pr, data, json_mode=json_mode)
+        if len(body) <= MAX_BODY:
+            break
+    if json_mode != "full":
+        print(f"comment size limit: embedded JSON degraded to '{json_mode}'",
+              file=sys.stderr)
 
     react_targets = [
         m for c in clusters if c["quorum"] >= 2 for m in c["members"]
@@ -170,11 +213,33 @@ def main():
     if existing:
         gh("api", "-X", "PATCH", f"repos/{args.repo}/issues/comments/{existing}",
            "--input", "-", payload=payload)
-        print(f"updated synthesis comment {existing}")
+        comment_id = existing
+        print(f"updated synthesis comment {comment_id}")
     else:
-        gh("api", "-X", "POST", f"repos/{args.repo}/issues/{args.pr}/comments",
-           "--input", "-", payload=payload)
-        print("posted new synthesis comment")
+        resp = gh("api", "-X", "POST", f"repos/{args.repo}/issues/{args.pr}/comments",
+                  "--input", "-", payload=payload)
+        try:
+            comment_id = json.loads(resp).get("id")
+        except json.JSONDecodeError:
+            comment_id = None
+        print(f"posted new synthesis comment {comment_id or ''}".rstrip())
+
+    # 1b. Verify the write actually landed (fetch it back, check the marker)
+    if comment_id:
+        try:
+            posted = gh("api", f"repos/{args.repo}/issues/comments/{comment_id}",
+                        "--jq", ".body")
+            if MARKER in posted:
+                print(f"verified: comment {comment_id} carries the quorum marker")
+            else:
+                print(f"warning: comment {comment_id} is missing the quorum marker — "
+                      "future runs would post a duplicate; inspect the comment",
+                      file=sys.stderr)
+        except subprocess.CalledProcessError:
+            print(f"warning: could not re-fetch comment {comment_id} to verify",
+                  file=sys.stderr)
+    else:
+        print("warning: no comment id returned; skipping verification", file=sys.stderr)
 
     # 2. Reactions on quorum >= 2 members (best-effort)
     if not args.no_reactions:
