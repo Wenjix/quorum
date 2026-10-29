@@ -1,0 +1,54 @@
+[
+  {
+    "id": 1001,
+    "node_id": "PRRC_cursor_1",
+    "user": { "login": "cursor[bot]" },
+    "path": "src/a.ts",
+    "line": 12,
+    "start_line": 10,
+    "original_line": 12,
+    "original_start_line": 10,
+    "body": "### Missing null check on parsed config\n\n**Medium Severity**\n\n<!-- DESCRIPTION START -->\n`parseConfig` can return `undefined`, but the caller dereferences it without a guard.\n<!-- DESCRIPTION END -->\n\n<!-- LOCATIONS START\nsrc/a.ts#L10-L12\nLOCATIONS END -->",
+    "diff_hunk": "@@ -8,6 +8,8 @@ export function load() {\n   const cfg = parseConfig(raw);\n+  const name = cfg.name;\n+  return name;\n }",
+    "html_url": "https://github.com/o/r/pull/7#discussion_r1001"
+  },
+  {
+    "id": 1002,
+    "node_id": "PRRC_devin_1",
+    "user": { "login": "devin-ai-integration[bot]" },
+    "path": "src/b.ts",
+    "line": 30,
+    "start_line": null,
+    "original_line": 30,
+    "original_start_line": null,
+    "body": "<!-- devin-review-comment {\"id\": \"BUG_pr-review-job-abc_0001\", \"file_path\": \"src/b.ts\", \"start_line\": 30, \"end_line\": 30, \"side\": \"RIGHT\"} -->\n\n🔴 **Off-by-one in the retry loop**\n\nThe loop runs one extra attempt when `max` is 0.",
+    "diff_hunk": "@@ -27,4 +27,6 @@ export function retry(max) {\n+  for (let i = 0; i <= max; i++) {\n+    attempt();\n+  }\n }",
+    "html_url": "https://github.com/o/r/pull/7#discussion_r1002"
+  },
+  {
+    "id": 1003,
+    "node_id": "PRRC_greptile_1",
+    "user": { "login": "greptile-apps[bot]" },
+    "path": "src/c.ts",
+    "line": 5,
+    "start_line": null,
+    "original_line": 5,
+    "original_start_line": null,
+    "body": "**P1** Unhandled promise rejection\n\n`fetchAll()` is not awaited, so a rejection here crashes the process.",
+    "diff_hunk": "@@ -3,3 +3,4 @@ export async function run() {\n+  fetchAll();\n   done();\n }",
+    "html_url": "https://github.com/o/r/pull/7#discussion_r1003"
+  },
+  {
+    "id": 1004,
+    "node_id": "PRRC_copilot_1",
+    "user": { "login": "Copilot" },
+    "path": "src/d.ts",
+    "line": null,
+    "start_line": null,
+    "original_line": null,
+    "original_start_line": null,
+    "body": "This helper looks unused after the refactor; consider removing it.",
+    "diff_hunk": "@@ -1,2 +1,2 @@\n-export const helper = () => 1;\n+export const helper = () => 2;",
+    "html_url": "https://github.com/o/r/pull/7#discussion_r1004"
+  }
+]
