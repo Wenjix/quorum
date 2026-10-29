@@ -1,5 +1,29 @@
 """Test doubles shared by the ledger and priors tests."""
 
+import os
+import subprocess
+import tempfile
+from unittest import mock
+
+
+def temp_cwd(test, git=False):
+    """Run the rest of `test` from a new empty directory (a fresh git repository
+    when `git`), with GIT_DIR and GIT_WORK_TREE unset so the surrounding
+    environment cannot name another repository. Returns its real path."""
+    folder = tempfile.TemporaryDirectory()
+    test.addCleanup(folder.cleanup)
+    path = os.path.realpath(folder.name)
+    env = mock.patch.dict(os.environ)
+    env.start()
+    test.addCleanup(env.stop)
+    for key in ("GIT_DIR", "GIT_WORK_TREE"):
+        os.environ.pop(key, None)
+    if git:
+        subprocess.run(["git", "init", "-q", path], check=True, capture_output=True)
+    test.addCleanup(os.chdir, os.getcwd())
+    os.chdir(path)
+    return path
+
 
 class FakeClient:
     """In-memory stand-in for a `quorum_github.Client`.

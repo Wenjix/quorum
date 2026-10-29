@@ -187,7 +187,9 @@ def lane_clusters(doc, lane):
 def map_nodes_and_edges(cluster):
     """([(id, label, kind)], [(from, to)]) for the cluster's invariant map: the
     agent's `escalation.map`, else a star of every location and sibling pointing
-    at the chokepoint. Empty when there is nothing to draw."""
+    at the chokepoint, one node per site: a sibling at a location's (file,
+    lines), as shown, is the same node, and the first to name a site keeps it.
+    Empty when there is nothing to draw."""
     escalation = cluster.get("escalation") or {}
     drawn = escalation.get("map") or {}
     if drawn.get("nodes"):
@@ -198,12 +200,13 @@ def map_nodes_and_edges(cluster):
     chokepoint = one_line(escalation.get("chokepoint") or "")[:STAR_LABEL_CHARS]
     if not chokepoint:
         return [], []
-    locations = [loc for loc in cluster.get("locations") or [] if loc.get("file")]
-    siblings = [sib for sib in escalation.get("siblings") or [] if sib.get("file")]
-    nodes = [(f"src{i}", format_location(loc["file"], loc.get("lines")), "source")
-             for i, loc in enumerate(locations)]
-    nodes += [(f"sib{i}", format_location(sib["file"], sib.get("lines")), "sibling")
-              for i, sib in enumerate(siblings)]
+    nodes, seen = [], set()
+    for prefix, kind, entries in (("src", "source", cluster.get("locations")),
+                                  ("sib", "sibling", escalation.get("siblings"))):
+        labels = [format_location(e["file"], e.get("lines")) for e in entries or [] if e.get("file")]
+        fresh = [label for label in dict.fromkeys(labels) if label not in seen]
+        seen.update(fresh)
+        nodes += [(f"{prefix}{i}", label, kind) for i, label in enumerate(fresh)]
     if not nodes:
         return [], []
     edges = [(node_id, "fix") for node_id, _, _ in nodes]
@@ -276,7 +279,8 @@ def render_disposition_line(cluster):
 
 def render_cluster_row(cluster, doc):
     """The row's lines: the summary, the disposition and, for an escalated
-    agreed cluster, the invariant and its map."""
+    agreed cluster, the invariant (unless the disposition note already says
+    it) and its map."""
     denominator = (doc.get("totals") or {}).get("reviewer_denominator")
     lines = [
         f"- **{p_tag_of(cluster)}** {title_of(cluster)} · `{plain(cluster_location(cluster))}` · "
@@ -286,8 +290,10 @@ def render_cluster_row(cluster, doc):
     ]
     escalation = cluster.get("escalation")
     if lane_of(cluster) == "agreed" and escalation:
-        if escalation.get("invariant"):
-            lines.append(f"  Invariant: {one_line(escalation['invariant'], NOTE_LIMIT)}")
+        invariant = one_line(escalation.get("invariant") or "", NOTE_LIMIT)
+        note = one_line((cluster.get("disposition") or {}).get("note") or "", NOTE_LIMIT)
+        if invariant and invariant != note:
+            lines.append(f"  Invariant: {invariant}")
         lines += render_invariant_map(cluster).splitlines()
     return lines
 
@@ -314,13 +320,24 @@ def render_deferred_section(doc):
 
 # --- header, gate, counts, footer -------------------------------------------
 
+def last_update(doc):
+    """The latest of the document's `generated_at` and the timeline's `plan_at`
+    and `last_disposition_at` (computed from the dispositions, as the footer's
+    are), compared as ISO strings; None when none is present. A dispose moves it."""
+    timeline = compute_timeline(doc, None)
+    stamps = [str(s) for s in (doc.get("generated_at"), timeline.get("plan_at"),
+                                timeline.get("last_disposition_at")) if s]
+    return max(stamps) if stamps else None
+
+
 def render_header(doc):
     totals = doc.get("totals") or {}
     reviewers = totals.get("reviewer_denominator", len(reviewer_names(doc)))
     parts = ([f"head `{plain(str(doc['head'])[:HEAD_CHARS])}`"] if doc.get("head") else [])
     parts.append(plural(reviewers, "reviewer"))
-    if doc.get("generated_at"):
-        parts.append(f"updated {plain(doc['generated_at'])}")
+    updated = last_update(doc)
+    if updated:
+        parts.append(f"updated {plain(updated)}")
     return ["## 🤝 Quorum · triage brief", f"<sub>{' · '.join(parts)}</sub>"]
 
 

@@ -7,10 +7,12 @@ import datetime
 import io
 import json
 import os
+import shutil
 import tempfile
 import unittest
+from unittest import mock
 
-from fakes import FakeClient
+from fakes import FakeClient, temp_cwd
 from quorum_doc import MARKER
 from quorum_priors import MAX_AGE_DAYS, MIN_N, aggregate, collect_docs, default_path, load_fresh_priors, main
 from quorum_render import minimal_doc
@@ -157,8 +159,29 @@ class LoadFreshPriorsTest(unittest.TestCase):
                 self.write(data)
                 self.assertEqual(load_fresh_priors(self.path, NOW), {})
 
-    def test_default_path_is_per_repository(self):
-        self.assertEqual(default_path("Wenjix/quorum"), os.path.join(".quorum", "priors", "Wenjix-quorum.json"))
+
+class DefaultPathTest(unittest.TestCase):
+    """The cache lives at the repository's top level, wherever in it a run starts."""
+
+    def test_outside_a_git_repository_it_is_in_the_working_directory(self):
+        cwd = temp_cwd(self)
+        self.assertEqual(default_path("Wenjix/quorum"),
+                         os.path.join(cwd, ".quorum", "priors", "Wenjix-quorum.json"))
+
+    @unittest.skipUnless(shutil.which("git"), "needs git")
+    def test_inside_a_git_repository_it_is_at_the_top_level(self):
+        top = temp_cwd(self, git=True)
+        for cwd in (top, os.path.join(top, "scratch", "deeper")):
+            with self.subTest(cwd=cwd):
+                os.makedirs(cwd, exist_ok=True)
+                os.chdir(cwd)
+                self.assertEqual(default_path("o/r"), os.path.join(top, ".quorum", "priors", "o-r.json"))
+
+    def test_without_git_it_falls_back_to_the_working_directory(self):
+        cwd = temp_cwd(self)
+        for failure in (FileNotFoundError("git"), PermissionError("git")):
+            with self.subTest(failure=failure), mock.patch("quorum_priors.subprocess.run", side_effect=failure):
+                self.assertEqual(default_path("o/r"), os.path.join(cwd, ".quorum", "priors", "o-r.json"))
 
 
 class CollectDocsTest(unittest.TestCase):
@@ -241,6 +264,19 @@ class MainTest(unittest.TestCase):
                 self.assertEqual(json.load(f)["reviewers"]["devin"]["n"], MIN_N)
         finally:
             os.chdir(cwd)
+
+    @unittest.skipUnless(shutil.which("git"), "needs git")
+    def test_main_from_a_subdirectory_writes_at_the_repository_top_level(self):
+        top = temp_cwd(self, git=True)
+        os.makedirs(os.path.join(top, "scratch"))
+        os.chdir(os.path.join(top, "scratch"))
+        code, out, err = self.run_main(["o/r"], self.client([doc(*solos("devin", "valid", MIN_N))]))
+        self.assertEqual(code, 0, err)
+        written = os.path.join(top, ".quorum", "priors", "o-r.json")
+        self.assertIn(written, out.splitlines()[0])
+        with open(written, encoding="utf-8") as f:
+            self.assertEqual(json.load(f)["reviewers"]["devin"]["n"], MIN_N)
+        self.assertFalse(os.path.exists(os.path.join(top, "scratch", ".quorum")))
 
     def test_main_with_no_ledgers_still_writes_an_empty_map_and_says_so(self):
         out_path = os.path.join(self.dir, "priors.json")

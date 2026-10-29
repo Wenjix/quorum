@@ -55,14 +55,14 @@ Then write `clusters.json` yourself, following the rubric exactly. Reminders:
 
 ```bash
 python3 scripts/validate_partition.py findings.json clusters.json -o clusters.scored.json \
-  [--priors .quorum/priors/<owner>-<repo>.json]
+  [--priors <repo-root>/.quorum/priors/<owner>-<repo>.json]
 
 # --all-singletons form (no clusters.json): one reviewer, or the fallback below
 python3 scripts/validate_partition.py findings.json --all-singletons -o clusters.scored.json \
-  [--priors .quorum/priors/<owner>-<repo>.json]
+  [--priors <repo-root>/.quorum/priors/<owner>-<repo>.json]
 ```
 
-Pass `--priors` when that file exists; it holds each reviewer's past precision in this repo and is embedded as `priors`.
+Pass `--priors` when that file exists; it holds each reviewer's past precision in this repo and is embedded as `priors`. The cache lives under the repository's `.quorum/priors/` (its git top level, `git rev-parse --show-toplevel`), not in the scratch directory.
 
 The script enforces the partition invariant and schema, applies the confidence gate (multi-finding clusters with `match_confidence < 0.7` are split back into singletons), computes `quorum` and `lane` per cluster, sorts by (quorum desc, severity desc), and writes `clusters.scored.json` as a `quorum/triage@1` document: the PR and its head, per-reviewer counts, `lanes` (the `agreed` and `solo` cluster ids), and per cluster its lane, P-tag, validation mode and the union of every member's locations.
 
@@ -81,7 +81,7 @@ To post for real, drop `--dry-run`. The script:
 
 - **Upserts** one comment, found by its hidden `<!-- quorum:synthesis -->` marker and trusted only when written by your account or a repo owner, member or collaborator. Re-runs update it in place, never spam.
 - Renders a human brief (merge gate line, the `agreed` and `solo` lanes, owner-deferred clusters) above a collapsed agent layer: the protocol from `references/triage-protocol.md` and the `quorum/triage@1` JSON.
-- Carries dispositions forward, so re-running Steps 0–3 after a push is safe: a new cluster inherits the latest disposition of any prior cluster sharing a member comment, and one whose files changed since is marked `stale: true` (shown as re-check).
+- Carries dispositions forward, so re-running Steps 0–3 after a push is safe: a new cluster inherits the latest disposition of any prior cluster sharing a member comment, and one whose files changed since is marked `stale: true` (shown as re-check), unless the push carries the disposition's own `--commit` fix.
 - Adds 👀 reactions to the bot comments in `agreed` clusters; `--no-reactions` skips them.
 - `--minimize` additionally collapses non-primary duplicate comments as DUPLICATE. This hides other bots' comments, so treat it as **opt-in: only with explicit user consent**.
 

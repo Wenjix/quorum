@@ -6,9 +6,10 @@ usage: quorum_priors.py OWNER/REPO [--out PATH]
 Reads the trusted `quorum/triage@1` ledger comment of every pull request in the
 repository, tallies what each reviewer's findings were judged to be, and writes
 {"generated_at", "repo", "reviewers": {name: {valid, partly, invalid, n}}} to
-PATH (default .quorum/priors/<owner>-<repo>.json). `quorum_ledger.py post-plan`
-embeds a fresh file in the next plan, so the agent sees how often each reviewer
-has been right in this repository.
+PATH (default .quorum/priors/<owner>-<repo>.json at the git top level of the
+current directory, or in it outside a git repository). `quorum_ledger.py
+post-plan` embeds a fresh file in the next plan, so the agent sees how often
+each reviewer has been right in this repository.
 
 A prior is a prior, never a verdict: it says nothing about the finding in
 front of you. A reviewer with fewer than MIN_N judged findings gets no prior,
@@ -21,6 +22,7 @@ import argparse
 import datetime
 import json
 import os
+import subprocess
 import sys
 from typing import Iterable
 
@@ -32,9 +34,23 @@ MAX_AGE_DAYS = 7     # a priors file older than this is not embedded
 OUTCOMES = ("valid", "partly", "invalid")
 
 
+def repo_root() -> str:
+    """The git top level of the current directory, or the current directory
+    when it is not in a git repository (or git is missing). Best-effort."""
+    try:
+        res = subprocess.run(["git", "rev-parse", "--show-toplevel"],
+                             capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.SubprocessError):
+        return os.getcwd()
+    top = res.stdout.strip()
+    return top if res.returncode == 0 and top else os.getcwd()
+
+
 def default_path(repo: str) -> str:
-    """Where `main` writes and `post-plan` reads the priors for `repo`."""
-    return os.path.join(".quorum", "priors", f"{repo.replace('/', '-')}.json")
+    """Where `main` writes and `post-plan` reads the priors for `repo`:
+    `.quorum/priors/<owner>-<repo>.json` under `repo_root()`, so a run from any
+    directory of the checkout finds the same cache."""
+    return os.path.join(repo_root(), ".quorum", "priors", f"{repo.replace('/', '-')}.json")
 
 
 # --- aggregating -------------------------------------------------------------
@@ -125,7 +141,8 @@ def parser():
     ap = argparse.ArgumentParser(prog="quorum_priors.py", description=__doc__.split("\n\n")[0])
     ap.add_argument("repo", metavar="OWNER/REPO")
     ap.add_argument("--out", metavar="PATH",
-                    help="where to write the priors (default .quorum/priors/<owner>-<repo>.json)")
+                    help="where to write the priors (default .quorum/priors/<owner>-<repo>.json "
+                         "at the repository's top level)")
     return ap
 
 

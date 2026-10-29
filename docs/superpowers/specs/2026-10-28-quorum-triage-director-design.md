@@ -420,7 +420,9 @@ produce different cluster ids. Dispositions must survive.
 - If `head` moved since the disposition and the cluster's `locations`
   files are in the diff between the two heads, the disposition is marked
   `stale: true` and the human brief shows "re-check" instead of the
-  verdict pill.
+  verdict pill. The owner's own fix push is the exception: a disposition
+  whose recorded `commit` is the new head or one of the commits between
+  the two heads stays live.
 - Prior dispositions with no successor cluster go to
   `orphaned_dispositions` in the JSON and are not shown in the human
   brief.

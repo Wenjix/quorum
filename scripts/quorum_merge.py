@@ -10,8 +10,12 @@ mutated.
 from __future__ import annotations
 
 import copy
+import re
 
 from quorum_doc import latest_disposition, upgrade_legacy
+
+# A recorded fixing commit: 7 to 40 lowercase hex characters, as `dispose --commit` takes it.
+COMMIT_RE = re.compile(r"[0-9a-f]{7,40}")
 
 
 def member_comment_ids(cluster: dict) -> set[int]:
@@ -45,18 +49,33 @@ def _at(candidate):
     return candidate["disposition"].get("at") or ""
 
 
-def _is_stale(cluster, head_moved, changed_files):
-    """Whether a carried disposition must be re-checked. `changed_files is None`
-    means unknown (the compare call failed), so it counts as touched."""
+def _fixed_by_the_push(disposition, compare, new_head):
+    """Whether the disposition's recorded `commit` (a 7 to 40 character SHA
+    prefix) is the new head or one of the commits between the two heads."""
+    commit = str(disposition.get("commit") or "")
+    if not COMMIT_RE.fullmatch(commit):
+        return False
+    shas = [str(new_head or "")] + [str(sha) for sha in (compare or {}).get("commits") or []]
+    return any(sha.startswith(commit) for sha in shas)
+
+
+def _is_stale(cluster, head_moved, compare, new_head):
+    """Whether a carried disposition must be re-checked. The push that carries
+    the disposition's own fixing commit never makes it stale. Otherwise it is
+    stale when the compare's files touch the cluster's `locations`, and
+    `compare is None` means unknown (the compare call failed), so it counts as
+    touched."""
     if not head_moved:
         return False
-    if changed_files is None:
+    if _fixed_by_the_push(cluster["disposition"], compare, new_head):
+        return False
+    if compare is None:
         return True
     files = {loc.get("file") for loc in cluster.get("locations") or []}
-    return bool(files & set(changed_files))
+    return bool(files & set(compare.get("files") or []))
 
 
-def inherit(new_doc: dict, prior_doc: dict | None, changed_files: list[str] | None) -> dict:
+def inherit(new_doc: dict, prior_doc: dict | None, compare: dict | None) -> dict:
     """A copy of `new_doc` where each cluster that shares a member comment id
     with a prior cluster carries that prior cluster's disposition.
 
@@ -65,9 +84,12 @@ def inherit(new_doc: dict, prior_doc: dict | None, changed_files: list[str] | No
     matching prior cluster's history and latest disposition are appended to the
     successor's history (a loser's escalation is dropped). Orphans left by an
     earlier run (`prior_doc["orphaned_dispositions"]`) match and compete the same
-    way, by `member_comment_ids`. A carried disposition gets `stale: True` when
-    the head moved and `changed_files` (the files changed between the two heads,
-    or None when unknown) names one of the successor's `locations[].file`.
+    way, by `member_comment_ids`. `compare` is what changed between the two
+    heads, {"files": [filename], "commits": [sha]}, or None when unknown. A
+    carried disposition gets `stale: True` when the head moved and `compare`
+    names one of the successor's `locations[].file` (or is None), unless the
+    disposition's recorded `commit` is a prefix of the new head or of one of
+    `compare["commits"]`: the owner's own fix push does not reopen it.
     Dispositions with no successor stay in `orphaned_dispositions`: earlier
     orphans first, then this run's, deduped on their sorted comment ids (the
     first is kept). `timeline` is taken from the prior document when the new one
@@ -99,7 +121,7 @@ def inherit(new_doc: dict, prior_doc: dict | None, changed_files: list[str] | No
         cluster["disposition_history"] = history
         if "escalation" in winner:
             cluster["escalation"] = copy.deepcopy(winner["escalation"])
-        if _is_stale(cluster, head_moved, changed_files):
+        if _is_stale(cluster, head_moved, compare, out.get("head")):
             cluster["disposition"]["stale"] = True
 
     unmatched = [c for c in candidates if id(c) not in matched]

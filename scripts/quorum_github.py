@@ -247,10 +247,13 @@ def minimize(client, node_id):
 
 
 def compare_files(client, repo, base, head):
-    """Filenames changed between two commits, or None when the compare fails."""
+    """{"files": filenames changed, "commits": SHAs of the commits} between two
+    commits (one `GET repos/{repo}/compare/{base}...{head}`), or None when the
+    compare fails."""
     try:
         result = client.api("GET", f"repos/{repo}/compare/{base}...{head}")
-        return [f["filename"] for f in result["files"]]
+        return {"files": [f["filename"] for f in result["files"]],
+                "commits": [c["sha"] for c in result.get("commits") or []]}
     except Exception:
         return None
 

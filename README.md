@@ -154,7 +154,7 @@ To give the skill each reviewer's past precision in a repo, compute priors from 
 quorum priors OWNER/REPO [--out PATH]
 ```
 
-The default path is `.quorum/priors/<owner>-<repo>.json`. `post-plan` embeds a priors file younger than a week as `priors`, and a reviewer needs at least five judged findings to get one. A prior says how often a reviewer has been right here; it is never a verdict on the finding in front of you.
+The default path is `.quorum/priors/<owner>-<repo>.json` at the repository's git top level, wherever in the checkout you run from (the current directory outside a git repository). `post-plan` embeds a priors file younger than a week as `priors`, and a reviewer needs at least five judged findings to get one. A prior says how often a reviewer has been right here; it is never a verdict on the finding in front of you.
 
 ## Use the Cloud Runner
 
@@ -280,10 +280,12 @@ The `quorum/triage@1` block holds the PR and head SHA, totals and per-reviewer c
 An agent without the Quorum skill can still triage. The protocol embedded in the comment says what each lane needs and how to report through `quorum_ledger.py`, and the scripts come from the tagged tarball:
 
 ```bash
-gh api repos/Wenjix/quorum/tarball/v0.3.0 > quorum.tgz && tar -xzf quorum.tgz
+mkdir -p quorum && gh api repos/Wenjix/quorum/tarball/v0.3.0 > quorum.tgz \
+  && tar -xzf quorum.tgz -C quorum --strip-components=1
+python3 quorum/scripts/quorum_ledger.py show OWNER/REPO PR
 ```
 
-Both `scripts/` and `references/` are needed together.
+The archive's top directory is `Wenjix-quorum-<sha>/`; `--strip-components=1` unpacks it into `quorum/` instead. Both `quorum/scripts/` and `quorum/references/` are needed together.
 
 ### Exploration run artifacts
 

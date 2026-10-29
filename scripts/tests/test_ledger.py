@@ -7,11 +7,12 @@ import datetime
 import io
 import json
 import os
+import shutil
 import tempfile
 import unittest
 from unittest import mock
 
-from fakes import FakeClient
+from fakes import FakeClient, temp_cwd
 from quorum_doc import MARKER, SCHEMA, extract_doc, now_iso
 from quorum_ledger import LEDGER_REF, main
 from quorum_render import load_protocol, minimal_doc, render_agent_layer, render_brief, render_comment
@@ -106,14 +107,10 @@ class PostPlanTest(unittest.TestCase):
         self.assertEqual(doc["deferred"], [])
         self.assertTrue(doc["timeline"]["plan_at"])
 
-    def in_temp_cwd(self):
-        """Run the test from an empty working directory (where the priors cache lives)."""
-        folder = tempfile.TemporaryDirectory()
-        self.addCleanup(folder.cleanup)
-        previous = os.getcwd()
-        self.addCleanup(os.chdir, previous)
-        os.chdir(folder.name)
-        return pathlib.Path(folder.name)
+    def in_temp_cwd(self, git=False):
+        """Run the test from an empty working directory (where the priors cache
+        lives outside a git repository), or from a fresh repository's top level."""
+        return pathlib.Path(temp_cwd(self, git=git))
 
     def write_priors(self, cwd, generated_at, reviewers):
         path = cwd / ".quorum" / "priors" / "o-r.json"
@@ -124,6 +121,18 @@ class PostPlanTest(unittest.TestCase):
         cwd = self.in_temp_cwd()
         priors = load("priors.json")
         self.write_priors(cwd, now_iso(), priors)
+        client = fake()
+        code, _, err = run(["post-plan", "o/r", "7", PLAN, "--no-reactions"], client)
+        self.assertEqual(code, 0, err)
+        self.assertEqual(written_doc(client)["priors"], priors)
+
+    @unittest.skipUnless(shutil.which("git"), "needs git")
+    def test_post_plan_run_from_a_subdirectory_reads_the_repository_cache(self):
+        top = self.in_temp_cwd(git=True)
+        priors = load("priors.json")
+        self.write_priors(top, now_iso(), priors)
+        (top / "scratch").mkdir()
+        os.chdir(top / "scratch")  # the skill's scratch directory inside the checkout
         client = fake()
         code, _, err = run(["post-plan", "o/r", "7", PLAN, "--no-reactions"], client)
         self.assertEqual(code, 0, err)
@@ -148,6 +157,27 @@ class PostPlanTest(unittest.TestCase):
         code, _, err = run(["post-plan", "o/r", "7", temp_json(self, plan), "--no-reactions"], client)
         self.assertEqual(code, 0, err)
         self.assertEqual(written_doc(client)["priors"], embedded)
+
+    def test_post_plan_refuses_a_plan_for_another_pull_request(self):
+        for argv in (["o/r", "8"], ["o/other", "7"]):  # the plan's pr is o/r#7
+            for dry_run in ([], ["--dry-run"]):
+                with self.subTest(argv=argv, dry_run=dry_run):
+                    client = fake()
+                    code, out, err = run(["post-plan", *argv, PLAN, *dry_run], client)
+                    self.assertEqual(code, 2)
+                    self.assertIn("o/r#7", err)
+                    self.assertIn(f"{argv[0]}#{argv[1]}", err)
+                    self.assertEqual(client.calls, [])  # refused before any read or write
+                    self.assertEqual(out, "")
+
+    def test_post_plan_matches_the_pr_case_insensitively_and_without_one(self):
+        plan = load("triage.json")
+        del plan["pr"]
+        for argv in (["O/R", "7", PLAN], ["o/r", "8", temp_json(self, plan)]):
+            with self.subTest(argv=argv):
+                code, out, err = run(["post-plan", *argv, "--dry-run"], fake())
+                self.assertEqual(code, 0, err)
+                self.assertTrue(out.startswith(MARKER))
 
     def test_post_plan_dry_run_makes_no_writes(self):
         client = fake()
@@ -204,6 +234,40 @@ class PostPlanTest(unittest.TestCase):
                 doc = written_doc(client)
                 got = {c["cluster_id"] for c in doc["clusters"] if c["disposition"].get("stale")}
                 self.assertEqual(got, stale)
+
+    def test_the_fix_push_keeps_the_gate_clear(self):
+        # The ledger was posted at 0000000; the owner confirms c1, pushes the fix
+        # fee1234 (touching c1's files) and records it with `dispose --commit`.
+        ledger = load("triage.ledger.json")
+        ledger["head"] = "0000000"
+        del cluster(ledger, "c1")["disposition"]["commit"]
+        client = fake(posted(ledger_body(ledger)))
+        code, _, err = run(["dispose", "o/r", "7", "c1", "--commit", "fee1234"], client)
+        self.assertEqual(code, 0, err)
+        disposed = comment_writes(client)[0][2]["body"]
+        self.assertEqual(extract_doc(disposed)["gate"]["state"], "clear")
+
+        # The next post-plan sees head abc1234; the compare touches c1's files.
+        compare = "repos/o/r/compare/0000000...abc1234"
+        fix_sha, later_sha = "fee1234" + "0" * 33, "abc1234" + "0" * 33
+        touched = [{"filename": "src/a.ts"}, {"filename": "src/b.ts"}]
+        for commits, gate, stale in (([fix_sha, later_sha], "clear", None),   # the fix is in the push
+                                     ([later_sha], "blocked", True)):         # it is not: re-check
+            with self.subTest(commits=commits):
+                answer = {"files": touched, "commits": [{"sha": sha} for sha in commits]}
+                client = fake(posted(disposed), responses={("GET", compare): answer})
+                code, _, err = run(["post-plan", "o/r", "7", PLAN, "--no-reactions"], client)
+                self.assertEqual(code, 0, err)
+                (_, _, body), = comment_writes(client)
+                doc = extract_doc(body["body"])
+                self.assertEqual(cluster(doc, "c1")["disposition"].get("stale"), stale)
+                self.assertEqual(doc["gate"]["state"], gate)
+                brief = body["body"].split("<details>")[0]
+                if gate == "clear":
+                    self.assertIn("**✅ Merge gate clear**", brief)
+                    self.assertNotIn("re-check", brief)
+                else:
+                    self.assertIn("**🛑 Blocked", brief)
 
     def test_post_plan_over_a_truncated_ledger_carries_dispositions_by_comment_id(self):
         ledger = load("triage.ledger.json")
@@ -466,10 +530,26 @@ class EscalateTest(unittest.TestCase):
         self.assertEqual(c1["escalation"]["by"], "agent")
         self.assertTrue(c1["escalation"]["at"])
         d = c1["disposition"]
-        self.assertEqual((d["verdict"], d["note"], d["evidence"]), ("valid", source["invariant"], source["evidence"]))
+        # The note names the chokepoint; the invariant has its own line in the brief.
+        self.assertEqual((d["verdict"], d["note"], d["evidence"]), ("valid", source["chokepoint"], source["evidence"]))
         self.assertEqual(d["at"], c1["escalation"]["at"])
-        self.assertIn("Invariant: Every write to the pipe", body["body"])
+        brief = body["body"].split("<details>")[0]
+        self.assertIn("  ✅ valid · src/pipe.ts writeAll(): the one function every writer calls.", brief)
+        self.assertEqual(brief.count("Every write to the pipe"), 1)
+        self.assertIn("  Invariant: Every write to the pipe", brief)
         self.assertNotIn("members", d)  # none given, none recorded
+
+    def test_escalation_without_a_chokepoint_notes_the_invariant_once(self):
+        source = load("escalation.json")
+        del source["chokepoint"]
+        client = fake(posted(ledger_body(load("triage.json"))))
+        code, _, err = run(["escalate", "o/r", "7", "c1", "--from", temp_json(self, source)], client)
+        self.assertEqual(code, 0, err)
+        (_, _, body), = comment_writes(client)
+        self.assertEqual(cluster(extract_doc(body["body"]), "c1")["disposition"]["note"], source["invariant"])
+        brief = body["body"].split("<details>")[0]
+        self.assertEqual(brief.count("Every write to the pipe"), 1)  # the note, with no Invariant: line
+        self.assertNotIn("Invariant:", brief)
 
     def test_escalate_records_member_verdicts_on_a_split_cluster(self):
         source = load("escalation.json")
@@ -498,7 +578,7 @@ class EscalateTest(unittest.TestCase):
         self.assertEqual(code, 0, err)
         c1 = cluster(written_doc(client), "c1")
         self.assertEqual(c1["disposition_history"][-1], cluster(ledger, "c1")["disposition"])
-        self.assertEqual(c1["disposition"]["note"], load("escalation.json")["invariant"])
+        self.assertEqual(c1["disposition"]["note"], load("escalation.json")["chokepoint"])
 
     def test_escalate_dry_run_makes_no_writes(self):
         client = fake(posted(ledger_body(load("triage.json"))))

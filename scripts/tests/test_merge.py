@@ -71,6 +71,14 @@ def renumber(doc, old, new, comment_ids=None):
     return out
 
 
+def changes(*files, commits=()):
+    """A compare between two heads: the files it changed and its commit SHAs."""
+    return {"files": list(files), "commits": list(commits)}
+
+
+NO_CHANGES = changes()
+
+
 def moved(doc, head="def5678"):
     out = copy.deepcopy(doc)
     out["head"] = head
@@ -87,7 +95,7 @@ class CarryTest(unittest.TestCase):
         new = renumber(load(), "c1", "c9", [1001, 7777])
         prior_before, new_before = copy.deepcopy(prior), copy.deepcopy(new)
 
-        out = inherit(new, prior, [])
+        out = inherit(new, prior, NO_CHANGES)
 
         c9 = cluster(out, "c9")
         self.assertEqual(c9["disposition"], latest)
@@ -112,7 +120,7 @@ class CarryTest(unittest.TestCase):
         second["members"] = [{**second["members"][1], "comment_id": 1002}]
         new["clusters"].append(second)
 
-        out = inherit(new, prior, [])
+        out = inherit(new, prior, NO_CHANGES)
 
         self.assertEqual(cluster(out, "c8")["disposition"], cluster(prior, "c1")["disposition"])
         self.assertEqual(cluster(out, "c9")["disposition"], cluster(prior, "c1")["disposition"])
@@ -132,7 +140,7 @@ class CarryTest(unittest.TestCase):
                 new = renumber(load(), "c1", "c9", [1001, 1003])
                 new["clusters"] = [c for c in new["clusters"] if c["cluster_id"] != "c2"]
 
-                out = inherit(new, prior, [])
+                out = inherit(new, prior, NO_CHANGES)
 
                 c9 = cluster(out, "c9")
                 self.assertEqual(c9["disposition"], new_)
@@ -154,7 +162,7 @@ class CarryTest(unittest.TestCase):
         c9["members"].append({**c9["members"][0], "id": "x-1", "comment_id": 1004})
         new["clusters"] = [c for c in new["clusters"] if c["cluster_id"] not in ("c2", "c3")]
 
-        out = inherit(new, prior, [])
+        out = inherit(new, prior, NO_CHANGES)
 
         self.assertEqual(cluster(out, "c9")["disposition"], h["c2"])
         self.assertEqual(cluster(out, "c9")["disposition_history"],
@@ -173,7 +181,7 @@ class CarryTest(unittest.TestCase):
                 new = renumber(load(), "c1", "c9", [1001, 1003])
                 new["clusters"] = [c for c in new["clusters"] if c["cluster_id"] != "c2"]
 
-                out = inherit(new, prior, [])
+                out = inherit(new, prior, NO_CHANGES)
 
                 c9 = cluster(out, "c9")
                 if winner_has_escalation:
@@ -185,7 +193,7 @@ class CarryTest(unittest.TestCase):
         prior = load()  # no dispositions anywhere
         new = renumber(load(), "c1", "c9")
 
-        out = inherit(new, prior, [])
+        out = inherit(new, prior, NO_CHANGES)
 
         self.assertEqual(out, new)
         self.assertEqual(out["orphaned_dispositions"], [])
@@ -203,17 +211,17 @@ class StaleTest(unittest.TestCase):
 
     def test_marks_stale_when_head_moved_and_file_changed(self):
         # c1's locations are src/a.ts and src/b.ts; either changing makes it stale.
-        for changed in (["src/a.ts"], ["README.md", "src/b.ts"]):
+        for changed in (changes("src/a.ts"), changes("README.md", "src/b.ts")):
             with self.subTest(changed=changed):
                 out = inherit(moved(load()), self.prior, changed)
                 self.assertIs(cluster(out, "c1")["disposition"]["stale"], True)
-        out = inherit(moved(load()), self.prior, ["other"])
+        out = inherit(moved(load()), self.prior, changes("other"))
         self.assertNotIn("stale", cluster(out, "c1")["disposition"])
-        out = inherit(moved(load()), self.prior, [])
+        out = inherit(moved(load()), self.prior, NO_CHANGES)
         self.assertNotIn("stale", cluster(out, "c1")["disposition"])
 
     def test_same_head_is_never_stale(self):
-        out = inherit(load(), self.prior, ["src/a.ts"])
+        out = inherit(load(), self.prior, changes("src/a.ts"))
         self.assertNotIn("stale", cluster(out, "c1")["disposition"])
         out = inherit(load(), self.prior, None)
         self.assertNotIn("stale", cluster(out, "c1")["disposition"])
@@ -234,13 +242,67 @@ class StaleTest(unittest.TestCase):
         new = moved(load())
         for loc in cluster(new, "c1")["locations"]:
             loc["lines"] = [None, None]
-        out = inherit(new, self.prior, ["src/b.ts"])
+        out = inherit(new, self.prior, changes("src/b.ts"))
         self.assertIs(cluster(out, "c1")["disposition"]["stale"], True)
 
     def test_an_already_stale_disposition_stays_stale(self):
         prior = with_dispositions(load(), c1=disposition("2026-10-29T10:05:00+00:00", stale=True))
-        out = inherit(moved(load()), prior, [])
+        out = inherit(moved(load()), prior, NO_CHANGES)
         self.assertIs(cluster(out, "c1")["disposition"]["stale"], True)
+
+
+FIX = "fee1234"                       # the fixing commit as `dispose --commit` recorded it
+FIX_SHA = FIX + "a" * 33              # the same commit as the compare lists it
+OTHER_SHA = "0123456" + "b" * 33
+
+
+class FixPushTest(unittest.TestCase):
+    """The owner's own fix commit, pushed after `dispose --commit`, touches the
+    cluster's files by design; it must not reopen the disposition."""
+
+    def prior(self, commit=FIX):
+        return with_dispositions(load(), c1=disposition("2026-10-29T10:05:00+00:00", commit=commit))
+
+    def stale(self, out):
+        return cluster(out, "c1")["disposition"].get("stale")
+
+    def test_fix_commit_in_the_compare_range_is_not_stale(self):
+        for commits in ([FIX_SHA], [OTHER_SHA, FIX_SHA]):
+            with self.subTest(commits=commits):
+                out = inherit(moved(load()), self.prior(), changes("src/a.ts", commits=commits))
+                self.assertIsNone(self.stale(out))
+        # The full 40-character SHA recorded as the commit matches too.
+        out = inherit(moved(load()), self.prior(FIX_SHA), changes("src/a.ts", commits=[FIX_SHA]))
+        self.assertIsNone(self.stale(out))
+
+    def test_fix_commit_absent_from_the_range_is_stale(self):
+        out = inherit(moved(load()), self.prior(), changes("src/a.ts", commits=[OTHER_SHA]))
+        self.assertIs(self.stale(out), True)
+        # A commit that is not a 7 to 40 character SHA never matches, however short.
+        for commit in ("fee", "FEE1234"):
+            with self.subTest(commit=commit):
+                out = inherit(moved(load()), self.prior(commit), changes("src/a.ts", commits=[FIX_SHA]))
+                self.assertIs(self.stale(out), True)
+        # Without a recorded commit the files decide, as before.
+        prior = with_dispositions(load(), c1=disposition("2026-10-29T10:05:00+00:00"))
+        out = inherit(moved(load()), prior, changes("src/a.ts", commits=[FIX_SHA]))
+        self.assertIs(self.stale(out), True)
+
+    def test_unknown_compare_is_stale(self):
+        out = inherit(moved(load()), self.prior(), None)
+        self.assertIs(self.stale(out), True)
+
+    def test_fix_commit_that_is_the_new_head_is_not_stale(self):
+        # The new head is the fix itself, so nothing came after it, compare known or not.
+        for compare in (None, changes("src/a.ts")):
+            with self.subTest(compare=compare):
+                out = inherit(moved(load(), head=FIX_SHA), self.prior(), compare)
+                self.assertIsNone(self.stale(out))
+
+    def test_fix_in_range_does_not_clear_an_already_stale_disposition(self):
+        prior = with_dispositions(load(), c1=disposition("2026-10-29T10:05:00+00:00", commit=FIX, stale=True))
+        out = inherit(moved(load()), prior, changes("src/a.ts", commits=[FIX_SHA]))
+        self.assertIs(self.stale(out), True)
 
 
 class OrphanTest(unittest.TestCase):
@@ -252,7 +314,7 @@ class OrphanTest(unittest.TestCase):
         new = load()
         new["clusters"] = [c for c in new["clusters"] if c["cluster_id"] not in ("c2", "c3")]
 
-        out = inherit(new, prior, [])
+        out = inherit(new, prior, NO_CHANGES)
 
         self.assertEqual(out["orphaned_dispositions"],
                          [{"cluster_id": "c2", "member_comment_ids": [1003], "disposition": d2}])
@@ -265,7 +327,7 @@ class OrphanTest(unittest.TestCase):
         new = load()
         new["clusters"] = [c for c in new["clusters"] if c["cluster_id"] != "c1"]
 
-        out = inherit(new, prior, [])
+        out = inherit(new, prior, NO_CHANGES)
 
         self.assertEqual(out["orphaned_dispositions"][0]["member_comment_ids"], [1001, 1002])
 
@@ -287,7 +349,7 @@ class EarlierOrphanTest(unittest.TestCase):
         self.d1 = disposition("2026-10-29T10:05:00+00:00")
         self.d2 = disposition("2026-10-29T10:06:00+00:00", "invalid")
         # Run N: c2 vanished from the clustering, so its disposition became an orphan.
-        run_n = inherit(without(load(), "c2"), with_dispositions(load(), c1=self.d1, c2=self.d2), [])
+        run_n = inherit(without(load(), "c2"), with_dispositions(load(), c1=self.d1, c2=self.d2), NO_CHANGES)
         self.assertEqual(run_n["orphaned_dispositions"], [orphan_entry("c2", [1003], self.d2)])
         self.run_n = run_n
 
@@ -308,7 +370,7 @@ class EarlierOrphanTest(unittest.TestCase):
     def test_an_orphan_reattaches_when_a_later_cluster_shares_a_comment_id(self):
         new = renumber(load(), "c2", "c7")  # c7 is back, still holding comment 1003
 
-        out = inherit(new, self.run_n, [])
+        out = inherit(new, self.run_n, NO_CHANGES)
 
         c7 = cluster(out, "c7")
         self.assertEqual(c7["disposition"], self.d2)
@@ -317,7 +379,7 @@ class EarlierOrphanTest(unittest.TestCase):
         self.assertEqual(out["orphaned_dispositions"], [])
 
         # The stale rule applies to it like to any carried disposition (c2's file is src/c.ts).
-        for changed, stale in ((["src/c.ts"], True), (["other"], None), (None, True)):
+        for changed, stale in ((changes("src/c.ts"), True), (changes("other"), None), (None, True)):
             with self.subTest(changed=changed):
                 out = inherit(moved(new), self.run_n, changed)
                 self.assertIs(cluster(out, "c7")["disposition"].get("stale"), stale)
@@ -336,7 +398,7 @@ class EarlierOrphanTest(unittest.TestCase):
                 # c9 holds comment 1001 (live prior c1) and 1003 (the orphan).
                 new = without(renumber(load(), "c1", "c9", [1001, 1003]), "c2")
 
-                out = inherit(new, prior, [])
+                out = inherit(new, prior, NO_CHANGES)
 
                 c9 = cluster(out, "c9")
                 if orphan_wins:
@@ -356,7 +418,7 @@ class EarlierOrphanTest(unittest.TestCase):
         prior = load()
         prior["orphaned_dispositions"] = [first, again, other]
 
-        out = inherit(without(load(), "c2"), prior, [])
+        out = inherit(without(load(), "c2"), prior, NO_CHANGES)
 
         self.assertEqual(out["orphaned_dispositions"], [first, other])
 
@@ -367,7 +429,7 @@ class EarlierOrphanTest(unittest.TestCase):
         prior = with_dispositions(load(), c2=disposition("2026-10-29T10:08:00+00:00", "valid"), c4=d4)
         prior["orphaned_dispositions"] = [earlier]
 
-        out = inherit(without(load(), "c2", "c4"), prior, [])
+        out = inherit(without(load(), "c2", "c4"), prior, NO_CHANGES)
 
         self.assertEqual(out["orphaned_dispositions"],
                          [earlier, orphan_entry("c4", [1005, 1006], d4)])
@@ -375,14 +437,14 @@ class EarlierOrphanTest(unittest.TestCase):
     def test_the_orphan_list_is_stable_across_repeated_carries(self):
         doc = self.run_n
         for _ in range(3):
-            doc = inherit(without(load(), "c2"), doc, [])
+            doc = inherit(without(load(), "c2"), doc, NO_CHANGES)
         self.assertEqual(doc["orphaned_dispositions"], [orphan_entry("c2", [1003], self.d2)])
 
 
 class LegacyAndTimelineTest(unittest.TestCase):
     def test_legacy_prior_doc_carries_nothing(self):
         new = load()
-        out = inherit(new, copy.deepcopy(LEGACY_PRIOR), ["src/a.ts"])
+        out = inherit(new, copy.deepcopy(LEGACY_PRIOR), changes("src/a.ts"))
 
         self.assertEqual(out, new)
         self.assertFalse(any("disposition" in c for c in out["clusters"]))
@@ -392,14 +454,14 @@ class LegacyAndTimelineTest(unittest.TestCase):
         prior = load()
         prior["timeline"] = {"plan_at": "2026-10-29T09:00:00+00:00",
                              "first_disposition_at": "2026-10-29T10:05:00+00:00"}
-        out = inherit(load(), prior, [])
+        out = inherit(load(), prior, NO_CHANGES)
         self.assertEqual(out["timeline"], prior["timeline"])
         self.assertIsNot(out["timeline"], prior["timeline"])
 
         # A plan_at already on the new doc is kept.
         new = load()
         new["timeline"] = {"plan_at": "2026-10-29T11:00:00+00:00"}
-        out = inherit(new, prior, [])
+        out = inherit(new, prior, NO_CHANGES)
         self.assertEqual(out["timeline"], {"plan_at": "2026-10-29T11:00:00+00:00"})
 
 

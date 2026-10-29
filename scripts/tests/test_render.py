@@ -7,6 +7,7 @@ import re
 import unittest
 
 from quorum_doc import MARKER, extract_doc
+from quorum_ledger import LEDGER_REF
 from quorum_gate import compute_deferred, compute_gate
 from quorum_render import (
     MAX_BODY, load_protocol, render_cluster_row, render_comment, render_gate_line,
@@ -15,6 +16,8 @@ from quorum_render import (
 
 FIXTURES = pathlib.Path(__file__).resolve().parent / "fixtures"
 PROTOCOL = load_protocol("v0.3.0")
+# The Node CLI's round-trip fixture (test/synthesis.test.ts says how to regenerate it).
+RENDERED_LEDGER = pathlib.Path(__file__).resolve().parents[2] / "test" / "fixtures" / "rendered-ledger.md"
 
 
 def load(name):
@@ -73,6 +76,10 @@ class RenderCommentTest(unittest.TestCase):
         self.assertNotIn("### Deferred", body)
         self.assertIn("tarball/v0.3.0", body)  # protocol embedded with the ledger ref substituted
         self.assertNotIn("{ledger_ref}", body)
+        # The archive's top directory is Wenjix-quorum-<sha>/: strip it so the paths resolve.
+        self.assertIn("mkdir -p quorum && gh api repos/Wenjix/quorum/tarball/v0.3.0 > quorum.tgz && "
+                      "tar -xzf quorum.tgz -C quorum --strip-components=1", body)
+        self.assertIn("`python3 quorum/scripts/quorum_ledger.py ...`", body)
         self.assertIn("<sub>Quorum · quorum/triage@1</sub>", body)  # no timeline yet
 
     def test_plan_state_rows(self):
@@ -192,16 +199,14 @@ class RenderCommentTest(unittest.TestCase):
             "```mermaid",
             "flowchart LR",
             '  src0["src/a.ts:L40"]',
-            '  src1["src/b.ts:L30-L31"]',
-            '  sib0["src/b.ts:L30-L31"]:::sibling',
-            '  sib1["src/f.ts:L88-L90"]:::sibling',
-            '  sib2["src/g.ts:L12"]:::sibling',
+            '  src1["src/b.ts:L30-L31"]',  # also the first sibling's site: drawn once
+            '  sib0["src/f.ts:L88-L90"]:::sibling',
+            '  sib1["src/g.ts:L12"]:::sibling',
             '  fix["src/pipe.ts writeAll(): the one function every writer calls,"]:::fix',
             "  src0 --> fix",
             "  src1 --> fix",
             "  sib0 --> fix",
             "  sib1 --> fix",
-            "  sib2 --> fix",
             "  classDef break stroke:#d73a49,stroke-width:2px",
             "  classDef fix stroke:#28a745,stroke-width:2px",
             "  classDef sibling stroke-dasharray:5 5",
@@ -236,6 +241,32 @@ class RenderCommentTest(unittest.TestCase):
             {"file": f"s{i}.ts", "lines": [i + 1, i + 1], "risk": "possible"} for i in range(10)]
         self.assertNotIn("mermaid", render_invariant_map(c1))
         self.assertIn("  - s9.ts:L10", render_invariant_map(c1))
+
+    def test_star_draws_each_site_once(self):
+        c1 = cluster(load("triage.ledger.json"), "c1")
+        del c1["escalation"]["map"]
+        c1["locations"] = [
+            {"file": "src/a.ts", "lines": [40, 40]},
+            {"file": "src/a.ts", "lines": [40, 40]},      # a second member at the same site
+            {"file": "src/a.ts", "lines": [41, 42]},
+        ]
+        c1["escalation"]["siblings"] = [
+            {"file": "src/a.ts", "lines": [40, 40], "risk": "likely"},   # a location's site
+            {"file": "src/f.ts", "lines": [88, 90], "risk": "possible"},
+            {"file": "src/f.ts", "lines": [88, 90], "risk": "unlikely"},  # listed twice
+            {"file": "src/a.ts", "lines": [41, 42], "risk": "likely"},
+            {"file": "src/g.ts", "lines": None, "risk": "possible"},
+            {"file": "src/g.ts", "lines": [None, None], "risk": "possible"},  # the same bare file
+        ]
+        star = render_invariant_map(c1).splitlines()
+        self.assertEqual([line for line in star if line.endswith(("]", "]:::sibling"))], [
+            '  src0["src/a.ts:L40"]',
+            '  src1["src/a.ts:L41-L42"]',
+            '  sib0["src/f.ts:L88-L90"]:::sibling',
+            '  sib1["src/g.ts"]:::sibling',
+        ])
+        self.assertEqual([line for line in star if " --> " in line],
+                         ["  src0 --> fix", "  src1 --> fix", "  sib0 --> fix", "  sib1 --> fix"])
 
     def test_ledger_map_is_drawn_with_classes_and_escapes(self):
         c1 = cluster(load("triage.ledger.json"), "c1")
@@ -284,6 +315,39 @@ class RenderCommentTest(unittest.TestCase):
         self.assertEqual(agreed[3], "```mermaid")
         self.assertEqual(agreed[-1], "```")
 
+    def test_an_invariant_already_in_the_note_is_not_repeated(self):
+        # A v0.3.0 escalation recorded the invariant as the disposition note too.
+        doc = load("triage.ledger.json")
+        c1 = cluster(doc, "c1")
+        c1["disposition"]["note"] = c1["escalation"]["invariant"]
+        rows = render_cluster_row(c1, doc)
+        self.assertEqual(rows[1], "  ✅ valid · fixed `ba814e4` · " + c1["escalation"]["invariant"])
+        self.assertFalse([row for row in rows if row.startswith("  Invariant:")])
+        brief = render_comment(doc, PROTOCOL).split("<details>")[0]
+        self.assertEqual(brief.count("Every write to the pipe must report"), 1)
+        # A note that differs (the chokepoint) keeps the invariant line.
+        c1["disposition"]["note"] = c1["escalation"]["chokepoint"]
+        self.assertEqual(render_cluster_row(c1, doc)[2],
+                         "  Invariant: " + c1["escalation"]["invariant"])
+
+    def test_header_stamp_is_the_latest_update(self):
+        doc = load("triage.json")  # generated 12:00, no timeline yet
+        self.assertIn("· updated 2026-10-29T12:00:00+00:00</sub>", render_comment(doc, PROTOCOL))
+        doc["timeline"] = {"plan_at": "2026-10-29T12:30:00+00:00"}
+        self.assertIn("· updated 2026-10-29T12:30:00+00:00</sub>", render_comment(doc, PROTOCOL))
+        # A disposition moves the stamp: the ledger's last one was recorded at 13:44.
+        ledger = load("triage.ledger.json")
+        self.assertIn("· updated 2026-10-29T13:44:00+00:00</sub>", render_comment(ledger, PROTOCOL))
+        cluster(ledger, "c3")["disposition"]["at"] = "2026-10-29T15:10:00+00:00"
+        self.assertIn("· updated 2026-10-29T15:10:00+00:00</sub>", render_comment(ledger, PROTOCOL))
+        # The timeline is computed from the dispositions, not read from the document.
+        ledger["timeline"]["last_disposition_at"] = "2026-10-30T00:00:00+00:00"
+        self.assertIn("· updated 2026-10-29T15:10:00+00:00</sub>", render_comment(ledger, PROTOCOL))
+        # Only generated_at, or nothing at all.
+        doc = load("triage.json")
+        doc["generated_at"] = None
+        self.assertIn("<sub>head `abc1234` · 3 reviewers</sub>", render_comment(doc, PROTOCOL))
+
     def test_header_names_fall_back_to_the_clusters(self):
         doc = load("triage.json")
         doc["reviewers"] = {}
@@ -312,6 +376,12 @@ class RenderCommentTest(unittest.TestCase):
         self.assertEqual(body.count("```json"), 1)
         self.assertIn("<details><summary>🤖 For triage agents · protocol, plan and ledger</summary>\n\n"
                       + PROTOCOL.rstrip("\n") + "\n\n```json\n", body)
+
+    def test_the_node_round_trip_fixture_is_current(self):
+        # test/synthesis.test.ts feeds this file to the Node CLI's extractor.
+        expected = render_comment(load("triage.ledger.json"), load_protocol(LEDGER_REF)) + "\n"
+        self.assertEqual(RENDERED_LEDGER.read_text(encoding="utf-8"), expected,
+                         "regenerate test/fixtures/rendered-ledger.md (see test/synthesis.test.ts)")
 
     def test_text_cannot_forge_or_break_the_json_fence(self):
         doc = load("triage.ledger.json")
@@ -467,7 +537,7 @@ class ShrinkTest(unittest.TestCase):
         again = render_comment(recovered, PROTOCOL)
         self.assertIn("<sub>Quorum · plan 13:02 → validated 13:44 → fixed 13:44 · quorum/triage@1</sub>", again)
         self.assertIn("  Invariant: Every write to the pipe must report how many bytes it accepted", again)
-        self.assertIn("updated 2026-10-29T12:00:00+00:00", again)
+        self.assertIn("updated 2026-10-29T13:44:00+00:00", again)  # the last disposition
         self.assertIn("**✅ Merge gate clear**", again.split("<details>")[0])
         self.assertNotIn("```mermaid", again)  # nothing is left to point the chokepoint at
         self.assertEqual(extract_doc(again)["timeline"], ledger["timeline"])

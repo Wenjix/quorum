@@ -15,11 +15,11 @@ usage: quorum_ledger.py post-plan OWNER/REPO PR clusters.scored.json
                         [--by NAME] [--scored PATH] [--dry-run]
        quorum_ledger.py show OWNER/REPO PR
 
-post-plan builds from the fresh scored file and inherits dispositions from the
-posted comment; unless the scored file already carries `priors`, it embeds the
-repository's cached ones (`quorum_priors.py`, ignored once a week old). dispose
-and escalate change the posted document (a truncated one is rebuilt from
---scored first). An escalation file may carry `members`
+post-plan builds from the fresh scored file (refused when its `pr` names another
+pull request) and inherits dispositions from the posted comment; unless the
+scored file already carries `priors`, it embeds the repository's cached ones
+(`quorum_priors.py`, ignored once a week old). dispose and escalate change the
+posted document (a truncated one is rebuilt from --scored first). An escalation file may carry `members`
 ({member_id: verdict}, checked as --member is) for the disposition it records.
 Reactions, minimising and replies are best-effort: a failure is counted, never
 fatal. --dry-run prints the body to stdout and the planned side effects to
@@ -85,14 +85,16 @@ def find_ledger(client, repo, pr, tolerate=False):
     return (found["id"], extract_doc(found["body"])) if found else (None, None)
 
 
-def changed_files(client, repo, prior_head, new_head):
-    """Files changed between the heads, [] when they match, None when unknown."""
+def compare_heads(client, repo, prior_head, new_head):
+    """What changed between the heads as {"files", "commits"}: both empty when
+    the heads match, None when unknown (no client or head, a failed compare, or
+    a file list at GitHub's cap)."""
     if prior_head == new_head:
-        return []
+        return {"files": [], "commits": []}
     if not (client and prior_head and new_head):
         return None
-    files = gh.compare_files(client, repo, prior_head, new_head)
-    return None if files is None or len(files) >= COMPARE_FILE_CAP else files
+    compare = gh.compare_files(client, repo, prior_head, new_head)
+    return None if compare is None or len(compare["files"]) >= COMPARE_FILE_CAP else compare
 
 
 def without_null_escalations(doc):
@@ -113,8 +115,7 @@ def posted_ledger(client, args):
         raise LedgerError("the posted ledger is truncated; pass --scored PATH "
                           "(the local clusters.scored.json) to rebuild it")
     scored = upgrade_legacy(load_json(args.scored))
-    files = changed_files(client, args.repo, posted.get("head"), scored.get("head"))
-    doc = inherit(scored, posted, files)
+    doc = inherit(scored, posted, compare_heads(client, args.repo, posted.get("head"), scored.get("head")))
     return comment_id, without_null_escalations(doc), posted
 
 
@@ -159,9 +160,14 @@ def write(client, args, body, comment_id, effects):
 
 def cmd_post_plan(args, client):
     doc = upgrade_legacy(load_json(args.scored))
+    target = f"{args.repo}#{args.pr}"
+    # GitHub owner and repository names are case-insensitive.
+    if doc.get("pr") and str(doc["pr"]).lower() != target.lower():
+        raise LedgerError(f"{args.scored} is the plan for {doc['pr']}, not {target}; "
+                          "post it to its own pull request or re-score this one")
     comment_id, prior = find_ledger(client, args.repo, args.pr, tolerate=args.dry_run)
     if prior:
-        doc = inherit(doc, prior, changed_files(client, args.repo, prior.get("head"), doc.get("head")))
+        doc = inherit(doc, prior, compare_heads(client, args.repo, prior.get("head"), doc.get("head")))
         without_null_escalations(doc)
         recorded = sum(1 for c in prior.get("clusters") or [] if latest_disposition(c))
         if recorded and not doc.get("orphaned_dispositions") and not any(
@@ -331,7 +337,9 @@ def cmd_escalate(args, client):
         raise LedgerError(f"{args.cluster_id} is in the {cluster.get('lane')!r} lane; escalate takes agreed "
                           "clusters only (prove or kill a solo cluster with dispose)")
     at, by = now_iso(), args.by or DEFAULT_BY
-    entry = {"verdict": escalation.get("verdict") or "valid", "note": escalation.get("invariant"),
+    # The brief prints the invariant on its own line, so the note names the chokepoint.
+    entry = {"verdict": escalation.get("verdict") or "valid",
+             "note": escalation.get("chokepoint") or escalation.get("invariant"),
              "members": escalation.get("members")}
     disposition = build_disposition(entry, cluster, by, at)
     disposition["evidence"] = escalation.get("evidence") or []

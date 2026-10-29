@@ -146,15 +146,26 @@ class TransportFunctionsTest(unittest.TestCase):
         failing = FakeClient({("GRAPHQL", ""): RuntimeError("forbidden")})
         self.assertFalse(minimize(failing, "NODE_1"))
 
-    def test_compare_files_lists_filenames(self):
+    def test_compare_files_lists_filenames_and_commits(self):
         c = FakeClient({("GET", "repos/o/r/compare/aaa...bbb"): {
             "files": [{"filename": "src/a.ts"}, {"filename": "src/b.ts"}],
+            "commits": [{"sha": "fee1234" + "0" * 33}, {"sha": "bbb" + "1" * 37}],
         }})
-        self.assertEqual(compare_files(c, "o/r", "aaa", "bbb"), ["src/a.ts", "src/b.ts"])
+        self.assertEqual(compare_files(c, "o/r", "aaa", "bbb"), {
+            "files": ["src/a.ts", "src/b.ts"],
+            "commits": ["fee1234" + "0" * 33, "bbb" + "1" * 37],
+        })
+        self.assertEqual([p for _, p, _, _ in c.calls], ["repos/o/r/compare/aaa...bbb"])  # one call
+
+    def test_compare_files_without_commits_lists_none(self):
+        c = FakeClient({("GET", "repos/o/r/compare/aaa...bbb"): {"files": [{"filename": "src/a.ts"}]}})
+        self.assertEqual(compare_files(c, "o/r", "aaa", "bbb"), {"files": ["src/a.ts"], "commits": []})
 
     def test_compare_files_none_on_error(self):
         c = FakeClient({("GET", "repos/o/r/compare"): RuntimeError("404")})
         self.assertIsNone(compare_files(c, "o/r", "aaa", "bbb"))
+        malformed = FakeClient({("GET", "repos/o/r/compare"): {"commits": []}})  # no files list
+        self.assertIsNone(compare_files(malformed, "o/r", "aaa", "bbb"))
 
     def test_reply_in_thread_path(self):
         c = FakeClient()
