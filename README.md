@@ -76,11 +76,11 @@ exploration.md + exploration.json + Canvas + optional PR comment
 
 ### Requirements
 
-- Node.js 22 or newer
+- Node.js 22.13 or newer
 - `npm`
 - `gh` CLI, authenticated for the target GitHub repo
-- `jq` and `python3` (3.9 or newer) for the skill scripts
-- An exploration backend key for live runs: `CURSOR_API_KEY` (default Cursor Cloud backend) or `ANTHROPIC_API_KEY` (with `--provider anthropic`). An authenticated `gh` or `GITHUB_TOKEN` also lets the Anthropic backend fetch the PR diff for code context; it degrades gracefully without one.
+- `jq` and Python 3.9 or newer for the skill scripts (`python3`; plain `python` on Windows)
+- An exploration backend key for live runs: `CURSOR_API_KEY` (default Cursor Cloud backend) or `ANTHROPIC_API_KEY` (with `--provider anthropic`). An authenticated `gh` or `GITHUB_TOKEN` also lets the Anthropic backend fetch the PR diff for code context; it degrades gracefully without one. You can persist keys with `quorum auth` (see [Persisting API keys](#persisting-api-keys)) so you don't need to `export` them every shell.
 
 Install dependencies and build:
 
@@ -138,9 +138,9 @@ The skill walks these steps (the full flow is in `SKILL.md`). Script and referen
 7. **Record dispositions.** `python3 scripts/quorum_ledger.py escalate OWNER/REPO PR CLUSTER_ID --from escalation.json` for an agreed cluster, `python3 scripts/quorum_ledger.py dispose OWNER/REPO PR --from dispositions.json --reply` for solo verdicts. A refusal names the offending field and writes nothing.
 8. **Fix, then record the commit.** Fixes are the owner's call. After each one: `python3 scripts/quorum_ledger.py dispose OWNER/REPO PR CLUSTER_ID --commit SHA --tests "what ran" --reply`. A declined fix is recorded as `--verdict deferred --note "<their reason>" --by owner`, which stops that cluster holding the merge gate.
 
-`scripts/quorum_ledger.py` is the only script that writes the PR comment, and every write re-renders the whole comment from its embedded JSON. The Phase 2 runner recovers that JSON from the PR automatically, so you usually do not need to pass a local `--scored` path.
+`scripts/quorum_ledger.py` is the only script that writes the PR comment, and every write re-renders the whole comment from its embedded JSON. The cloud exploration runner recovers that JSON from the PR automatically, so you usually do not need to pass a local `--scored` path.
 
-You can also run Phase 1 directly from the CLI without the skill:
+You can also run the synthesis step directly from the CLI without the skill:
 
 ```bash
 quorum synthesize OWNER/REPO#123
@@ -161,10 +161,13 @@ The default path is `.quorum/priors/<owner>-<repo>.json` at the repository's git
 First set the API key for your backend (Cursor Cloud is the default):
 
 ```bash
-export CURSOR_API_KEY="crsr_..."        # default backend
+quorum auth                    # interactive menu (recommended)
+quorum auth --cursor-key "crsr_..."      # set Cursor Cloud key non-interactively
 # or, for the Anthropic backend:
-export ANTHROPIC_API_KEY="sk-ant-..."
+quorum auth --anthropic-key "sk-ant-..." --provider anthropic
 ```
+
+You can still use environment variables instead of, or to override, the config file (see [Persisting API keys](#persisting-api-keys) for the full resolution order).
 
 Generate the exploration DAG, report shell, and Canvas without making any cloud or GitHub calls:
 
@@ -184,7 +187,7 @@ Run live exploration and upsert the PR exploration comment:
 quorum post-pr https://github.com/OWNER/REPO/pull/123
 ```
 
-Synthesize and explore in one shot (Phase 1 then Phase 2):
+Synthesize and explore in one shot (synthesis then exploration):
 
 ```bash
 quorum triage-pr https://github.com/OWNER/REPO/pull/123
@@ -210,6 +213,35 @@ Set the default with the `QUORUM_PROVIDER` environment variable. Each backend ha
 | LOW        | `composer-2.5`   | `claude-haiku-4-5`  |
 
 The Anthropic backend is **code-aware**: it fetches the pull request's unified diff and injects it as the agent's view of the code (capped at 200k characters, read-only — it never edits, commits, or pushes). When the diff cannot be fetched it falls back to a "no code context" note and flags missing evidence rather than guessing, so authenticate `gh` or set `GITHUB_TOKEN` for best results.
+
+### Persisting API keys
+
+`quorum auth` saves API keys and the default provider to a config file so you don't need to `export` them in every shell. The file lives at:
+
+```text
+$XDG_CONFIG_HOME/quorum/credentials.json    (or ~/.config/quorum/credentials.json)
+```
+
+It is created with mode `0o600` and is never committed. Override the path with the `QUORUM_CONFIG` environment variable.
+
+API key resolution order (highest precedence first):
+
+1. `--api-key` flag on the command line
+2. `CURSOR_API_KEY` / `ANTHROPIC_API_KEY` environment variable
+3. Persisted config file (set via `quorum auth`)
+
+The default provider resolves the same way: `--provider` flag > `QUORUM_PROVIDER` env var > config file > `cursor`.
+
+```bash
+quorum auth                           # interactive menu (recommended)
+quorum auth --cursor-key "crsr_..."   # set Cursor Cloud key non-interactively
+quorum auth --anthropic-key "sk-ant-..." --provider anthropic
+quorum auth --provider anthropic      # change only the default provider
+quorum auth --show                    # print masked values
+quorum auth --clear                   # remove all stored keys
+```
+
+`quorum setup` reads the config file too, so it reports keys as "set" whether they come from the environment or the config file.
 
 Open or regenerate a Canvas from an existing run:
 
@@ -251,9 +283,10 @@ Useful options:
 ### Utility commands
 
 ```bash
-quorum synthesize OWNER/REPO#PR   Run the Phase 1 pipeline (fetch, score, post plan); all-singletons when no clusters.json is given.
+quorum synthesize OWNER/REPO#PR   Run the synthesis step (fetch, score, post plan); all-singletons when no clusters.json is given.
 quorum priors OWNER/REPO [--out PATH]   Compute per-reviewer precision priors from past ledgers in a repo.
 quorum setup                 Check prerequisites, backend keys, and skill install.
+quorum auth                  Persist API keys / default provider to a config file.
 quorum eval [--log-dir DIR]  Summarize past run logs (task outcomes, durations).
 quorum run-dag --dag dag.json --out DIR --repo OWNER/REPO   Run a saved DAG directly.
 ```
@@ -353,12 +386,13 @@ Quorum treats reviewer consensus as signal, not truth.
 
 ```text
 SKILL.md                 Skill instructions for the triage director
-quorum.skill             Packaged Claude/Cursor skill (scripts and references, without tests)
-scripts/                 Skill scripts (Python 3.9+): fetch, validate_partition, quorum_ledger, priors
+quorum.skill             Packaged Claude/Cursor skill, without tests (rebuild: npm run build:skill)
+scripts/                 Skill scripts (Python 3.9+): fetch findings, validate/score clusters, ledger, priors
 scripts/tests/           Python test suite (not shipped in quorum.skill or the npm tarball)
-references/              Clustering rubric, triage protocol, escalation and validator prompts
+references/              Clustering rubric, triage protocol, escalation and validator prompts the skill follows
 src/                     TypeScript cloud runner
 test/                    Node test suite
+docs/                    Dependency notes and README assets
 package.json             Build, test, and dependency metadata
 ```
 
@@ -397,6 +431,12 @@ Build the CLI:
 
 ```bash
 npm run build
+```
+
+Repackage `quorum.skill` after changing `SKILL.md`, `scripts/`, or `references/` (commit the changes first — it packages from `HEAD`):
+
+```bash
+npm run build:skill
 ```
 
 After building, the CLI entrypoint is:

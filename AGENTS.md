@@ -7,11 +7,13 @@ Operational guidance for humans and coding agents working in this repo.
 - **Registry:** npmjs, pinned in `.npmrc`. Do not switch to
   `registry.npmmirror.com` or commit a lockfile that resolves from it — its
   advisory endpoint returns `NOT_IMPLEMENTED`, so `npm audit` silently can't run.
-- **The `overrides` in `package.json` are intentional security pins** for
-  `@cursor/sdk`'s transitive deps (`tar`, `undici`, `@tootallnate/once`) — there
-  is no upstream `@cursor/sdk` fix yet. Do not remove or loosen them, and do not
-  regenerate the lockfile against another registry. Rationale, verification, and
-  removal conditions live in `docs/dependencies.md` (removal tracked in #5).
+- **The `undici` override in `package.json` is an intentional security pin** for
+  `@cursor/sdk`'s transitive `@connectrpc/connect-node@1.7.0` dependency — there
+  is no compatible upstream `@cursor/sdk` fix yet. Do not remove or loosen it,
+  and do not regenerate the lockfile against another registry. The former `tar`
+  and `@tootallnate/once` pins were removed after the SDK dropped `sqlite3`.
+  Rationale, verification, and the remaining removal condition live in
+  `docs/dependencies.md` (tracked in #5).
 - **Auditing:** `npm audit --audit-level=moderate` (npmjs registry required).
 
 ## Build, test & run
@@ -26,11 +28,6 @@ Single Node.js/TypeScript CLI — no server, no watch mode.
   `from __future__ import annotations` in any module that uses PEP 604 unions (`X | None`).
   `scripts/quorum_ledger.py` is the only writer of the PR comment: every other path (the CLI's
   `synthesize`, the skill, an agent following the embedded protocol) posts through it.
-- `npm run build:skill` rebuilds `quorum.skill` from `SKILL.md`, `scripts/` and `references/`, and strips
-  `scripts/tests` and `__pycache__` from the zip. Rebuild it whenever any of those change. The npm
-  tarball leaves tests out too: the negated `!scripts/tests/` and `!scripts/**/__pycache__/` entries in
-  `package.json` `files` do the work (a root `.npmignore` alone does not override the `files`
-  whitelist), and `.npmignore` repeats them. Check with `npm pack --dry-run`.
 - After editing `src/`, rebuild and invoke with `node dist/src/cli.js <command>` (no `npm link` step).
 - **Offline / no-credentials runs:** `plan-pr <PR-URL>` is plan-only by design — it builds the
   DAG → state → report → Canvas without calling any cloud backend. It still reads the PR's findings from
@@ -44,6 +41,19 @@ Single Node.js/TypeScript CLI — no server, no watch mode.
   an authenticated `gh` CLI. The Anthropic backend also fetches the PR diff for code context, so
   `GITHUB_TOKEN`/`gh` auth improves it but is non-fatal if missing. Without credentials the runner
   still completes, recording per-task `ERROR`/`SKIPPED` instead of crashing.
+- **Persisting API keys** — `quorum auth` saves `CURSOR_API_KEY` / `ANTHROPIC_API_KEY` / `QUORUM_PROVIDER`
+  to `~/.config/quorum/credentials.json` (0o600) so you don't `export` them every shell. Key resolution
+  order: `--api-key` flag > process env > config file. Override the file path with `QUORUM_CONFIG`.
+- **Repackaging the skill:** `quorum.skill` is the committed, installable zip of `SKILL.md`,
+  `scripts/` and `references/`. The README's install steps unzip it, so a stale zip ships stale
+  scripts. After changing any of those files: commit the change, run `npm run build:skill`
+  (it packages from `HEAD` via `git archive`, so uncommitted edits are left out), and commit the
+  refreshed zip. `.gitattributes` pins the packaged files to LF so Windows `core.autocrlf` can't
+  inject CRLF (exec bits come from the index), and marks `scripts/tests/**` and `__pycache__`
+  `export-ignore` so the zip carries no tests. The npm tarball leaves tests out too: the negated
+  `!scripts/tests/` and `!scripts/**/__pycache__/` entries in `package.json` `files` do the work
+  (a root `.npmignore` alone does not override the `files` whitelist), and `.npmignore` repeats
+  them. Check with `npm pack --dry-run`.
 - Run artifacts are written under `.quorum/` (gitignored).
 
 ## Cursor Cloud

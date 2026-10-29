@@ -22,10 +22,10 @@ Core design rules — do not violate these:
 
 ## Preconditions
 
-- `gh` CLI authenticated with access to the repo (`gh auth status`), plus `jq` and `python3`.
+- `gh` CLI authenticated with access to the repo (`gh auth status`), plus `jq` and Python 3 (`python3`; plain `python` on Windows — substitute in the commands below).
 - A target PR. Use the number/URL the user gave; otherwise resolve from the current branch with `gh pr view --json number,headRepository,url`. If ambiguous, ask.
 
-Work in a scratch directory (e.g. `/tmp/quorum-<pr>/`) so intermediate JSON doesn't pollute the repo. The `scripts/` and `references/` paths below are relative to this skill's directory.
+Work in a scratch directory (e.g. `/tmp/quorum-<pr>/`, or your harness's scratchpad directory) so intermediate JSON doesn't pollute the repo. The `scripts/` and `references/` paths below are relative to this skill's directory.
 
 ## Step 0 — Fetch findings and count reviewers
 
@@ -144,6 +144,8 @@ With no posted ledger, `triage` comes out `null`. Every bad merge the user spots
 
 If the repo has this Quorum CLI built and linked, prefer the shortcut commands over hand-writing the long `explore --repo --pr --scored` form.
 
+`run-pr` and `post-pr` call the exploration backend and need its key — `CURSOR_API_KEY` (the default backend) or `ANTHROPIC_API_KEY` with `--provider anthropic` / `QUORUM_PROVIDER=anthropic`. `quorum auth` persists keys to a config file so they don't need exporting each shell. `plan-pr` and `canvas` call no backend and need no key.
+
 ```bash
 quorum plan-pr https://github.com/OWNER/REPO/pull/N
 quorum run-pr https://github.com/OWNER/REPO/pull/N
@@ -151,8 +153,8 @@ quorum post-pr https://github.com/OWNER/REPO/pull/N
 quorum canvas .quorum/runs/<run-id>
 ```
 
-- `plan-pr` recovers the embedded `quorum/triage@1` JSON from the `<!-- quorum:synthesis -->` ledger comment, writes the DAG/report/Canvas, and does not call Cursor Cloud.
-- `run-pr` runs the Cursor Cloud DAG and writes local artifacts/Canvas, but does not post an exploration comment by default.
+- `plan-pr` recovers the embedded `quorum/triage@1` JSON from the `<!-- quorum:synthesis -->` ledger comment, writes the DAG/report/Canvas, and does not call the cloud backend.
+- `run-pr` runs the cloud DAG and writes local artifacts/Canvas, but does not post an exploration comment by default.
 - `post-pr` runs the DAG and upserts its own `<!-- quorum:exploration -->` comment. Until the runner follow-up writes escalations into the ledger, it is the one path that adds a second comment.
 - The commands select the `agreed` lane by default. `--min-quorum N` overrides that with a quorum floor (`--min-quorum 1` takes the solo lane too); `--cluster ID[,ID]` picks clusters by id.
 - Add `--scored path/to/clusters.scored.json` if no ledger comment exists yet or the user has a local scored file.
