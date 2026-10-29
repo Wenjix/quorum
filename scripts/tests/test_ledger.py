@@ -424,6 +424,27 @@ class EscalateTest(unittest.TestCase):
         self.assertEqual((d["verdict"], d["note"], d["evidence"]), ("valid", source["invariant"], source["evidence"]))
         self.assertEqual(d["at"], c1["escalation"]["at"])
         self.assertIn("Invariant: Every write to the pipe", body["body"])
+        self.assertNotIn("members", d)  # none given, none recorded
+
+    def test_escalate_records_member_verdicts_on_a_split_cluster(self):
+        source = load("escalation.json")
+        source["members"] = {"devin-1": "partly"}  # devin named the wrong mechanism
+        client = fake(posted(ledger_body(load("triage.json"))))
+        code, _, err = run(["escalate", "o/r", "7", "c1", "--from", temp_json(self, source)], client)
+        self.assertEqual(code, 0, err)
+        d = cluster(written_doc(client), "c1")["disposition"]
+        self.assertEqual((d["verdict"], d["members"]), ("valid", {"devin-1": "partly"}))
+
+    def test_escalate_rejects_bad_member_verdicts(self):
+        for members, expected in (({"copilot-9": "partly"}, "copilot-9"), ({"devin-1": "maybe"}, "maybe")):
+            with self.subTest(members=members):
+                source = load("escalation.json")
+                source["members"] = members
+                client = fake(posted(ledger_body(load("triage.json"))))
+                code, _, err = run(["escalate", "o/r", "7", "c1", "--from", temp_json(self, source)], client)
+                self.assertEqual(code, 2)
+                self.assertIn(expected, err)
+                self.assertEqual(writes(client), [])
 
     def test_escalate_pushes_the_prior_disposition_to_history(self):
         ledger = load("triage.ledger.json")
@@ -507,6 +528,17 @@ class ShowTest(unittest.TestCase):
         self.assertEqual(code, 0, err)
         self.assertEqual(json.loads(out), extract_doc(body))
         self.assertEqual(writes(client), [])
+
+    def test_show_on_a_truncated_ledger_prints_the_gate(self):
+        ledger = load("triage.ledger.json")
+        del cluster(ledger, "c1")["disposition"]["commit"]  # confirmed, not yet fixed: it blocks
+        client = fake(posted(truncated_body(ledger)))
+        code, out, err = run(["show", "o/r", "7"], client)
+        self.assertEqual(code, 0, err)
+        shown = json.loads(out)
+        self.assertIs(shown["truncated"], True)
+        self.assertEqual((shown["gate"]["state"], shown["gate"]["blocking"]), ("blocked", ["c1"]))
+        self.assertEqual(shown["deferred"], ["c3"])
 
     def test_show_without_a_ledger_comment(self):
         code, out, err = run(["show", "o/r", "7"], fake())

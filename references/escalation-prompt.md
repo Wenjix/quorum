@@ -44,6 +44,7 @@ Return a concise human-readable explanation, then end with exactly one fenced JS
   "evidence": [
     {"file": "path", "lines": [40, 40], "note": "why this matters"}
   ],
+  "members": {"member_id": "valid | partly | invalid"},
   "map": {
     "nodes": [{"id": "n1", "label": "short label", "kind": "source | break | symptom | fix | sibling"}],
     "edges": [["n1", "n2"]]
@@ -54,4 +55,5 @@ Return a concise human-readable explanation, then end with exactly one fenced JS
 - `lines` is a `[start, end]` pair of line numbers; a single line is `[40, 40]`.
 - `siblings` is `[]` when the sweep finds none; say so in the explanation.
 - `invariant`, `chokepoint` and `test` are a sentence or two each, under 2000 characters.
+- `members` is optional: on a `split` cluster where one reviewer's mechanism was wrong, give that member its own verdict (`partly` or `invalid`), keyed by its id from `member_ids`; members left out take the cluster verdict.
 - `map` is optional: the data-flow chain from where bad data enters (`source`) through where the invariant breaks (`break`) to where it shows (`symptom`), plus the `fix` at the chokepoint and any `sibling` sites. Twelve nodes or fewer draw as a diagram; more are shown as a list. Leave `map` out rather than guess at a chain.

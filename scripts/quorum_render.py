@@ -443,10 +443,11 @@ def minimal_escalation(escalation):
 
 
 def minimal_doc(doc):
-    """What the Node CLI needs, the timeline, and per cluster its members
-    reduced to {id, comment_id} (so a re-run can still match dispositions by
-    comment id), its escalation (reduced) and its disposition (text cut to
-    NOTE_LIMIT); marked `truncated`."""
+    """What the Node CLI needs, the merge gate and deferred list (computed as
+    the brief's gate line computes them, text cut to NOTE_LIMIT), the timeline,
+    and per cluster its members reduced to {id, comment_id} (so a re-run can
+    still match dispositions by comment id), its escalation (reduced) and its
+    disposition (text cut to NOTE_LIMIT); marked `truncated`."""
     return {
         "schema": doc.get("schema"),
         "pr": doc.get("pr"),
@@ -454,6 +455,8 @@ def minimal_doc(doc):
         "generated_at": doc.get("generated_at"),
         "totals": copy.deepcopy(doc.get("totals")),
         "lanes": copy.deepcopy(doc.get("lanes")),
+        "gate": cap_strings(compute_gate(doc), NOTE_LIMIT),
+        "deferred": compute_deferred(doc),
         "timeline": copy.deepcopy(doc.get("timeline")),
         "truncated": True,
         "clusters": [

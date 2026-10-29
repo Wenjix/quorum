@@ -17,9 +17,11 @@ usage: quorum_ledger.py post-plan OWNER/REPO PR clusters.scored.json
 
 post-plan builds from the fresh scored file and inherits dispositions from the
 posted comment; dispose and escalate change the posted document (a truncated
-one is rebuilt from --scored first). Reactions, minimising and replies are
-best-effort: a failure is counted, never fatal. --dry-run prints the body to
-stdout and the planned side effects to stderr, and writes nothing.
+one is rebuilt from --scored first). An escalation file may carry `members`
+({member_id: verdict}, checked as --member is) for the disposition it records.
+Reactions, minimising and replies are best-effort: a failure is counted, never
+fatal. --dry-run prints the body to stdout and the planned side effects to
+stderr, and writes nothing.
 """
 
 from __future__ import annotations
@@ -323,7 +325,8 @@ def cmd_escalate(args, client):
         raise LedgerError(f"{args.cluster_id} is in the {cluster.get('lane')!r} lane; escalate takes agreed "
                           "clusters only (prove or kill a solo cluster with dispose)")
     at, by = now_iso(), args.by or DEFAULT_BY
-    entry = {"verdict": escalation.get("verdict") or "valid", "note": escalation.get("invariant")}
+    entry = {"verdict": escalation.get("verdict") or "valid", "note": escalation.get("invariant"),
+             "members": escalation.get("members")}
     disposition = build_disposition(entry, cluster, by, at)
     disposition["evidence"] = escalation.get("evidence") or []
     cluster["escalation"] = {**escalation, "by": by, "at": at}

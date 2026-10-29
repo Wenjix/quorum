@@ -424,8 +424,11 @@ class ShrinkTest(unittest.TestCase):
 
         minimal = levels[3]
         self.assertEqual(list(minimal), ["schema", "pr", "head", "generated_at", "totals", "lanes",
-                                         "timeline", "truncated", "clusters"])
+                                         "gate", "deferred", "timeline", "truncated", "clusters"])
         self.assertIs(minimal["truncated"], True)
+        self.assertEqual(minimal["gate"], compute_gate(doc))
+        self.assertEqual(minimal["deferred"], compute_deferred(doc))
+        self.assertEqual(minimal["deferred"], ["c3"])
         self.assertEqual(minimal["timeline"], doc["timeline"])
         self.assertEqual(minimal["generated_at"], doc["generated_at"])
         self.assertEqual(
@@ -440,6 +443,13 @@ class ShrinkTest(unittest.TestCase):
         self.assertIsNone(minimal["clusters"][2]["escalation"])  # c2 has none
         self.assertEqual(minimal["clusters"][0]["disposition"], doc["clusters"][0]["disposition"])
         self.assertTrue(accepted_by_node_cli(minimal))
+
+    def test_minimal_gate_cuts_the_tests_note(self):
+        doc = load("triage.ledger.json")
+        cluster(doc, "c2")["disposition"]["tests"] = "t" * 2000
+        gate = list(shrink_levels(doc))[3]["gate"]
+        self.assertEqual(gate["state"], "clear")
+        self.assertEqual(len(gate["tests"]), 400)
 
     def test_minimal_level_keeps_the_timeline_and_the_invariant(self):
         ledger = load("triage.ledger.json")
