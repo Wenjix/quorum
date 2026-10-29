@@ -1,0 +1,315 @@
+{
+  "schema": "quorum/triage@1",
+  "pr": "o/r#7",
+  "head": "abc1234",
+  "generated_at": "2026-10-29T12:00:00+00:00",
+  "totals": {
+    "findings": 6,
+    "clusters": 4,
+    "reviewer_denominator": 3,
+    "gate_split": []
+  },
+  "reviewers": {
+    "bugbot": 2,
+    "devin": 2,
+    "greptile": 2
+  },
+  "priors": {},
+  "lanes": {
+    "agreed": [
+      "c1",
+      "c4"
+    ],
+    "solo": [
+      "c2",
+      "c3"
+    ]
+  },
+  "clusters": [
+    {
+      "cluster_id": "c1",
+      "member_ids": [
+        "bugbot-1",
+        "devin-1"
+      ],
+      "canonical_title": "Pipe writer loses data when the pipe is full",
+      "canonical_description": "Pipe writer loses data when the pipe is full.",
+      "category": "data-integrity",
+      "severity": "major",
+      "primary_location": {
+        "file": "src/a.ts",
+        "start_line": 40,
+        "end_line": 40
+      },
+      "match_type": "same-root-cause",
+      "match_confidence": 0.9,
+      "cross_file": false,
+      "match_rationale": "Both describe lost pipe writes fixed by one change to the writer.",
+      "symptom": "Bytes written to the pipe never reach the reader.",
+      "mechanisms_claimed": [
+        {
+          "reviewer": "bugbot",
+          "member_id": "bugbot-1",
+          "mechanism": "The writer ignores a partial write return value."
+        },
+        {
+          "reviewer": "devin",
+          "member_id": "devin-1",
+          "mechanism": "The writer drops the whole frame when the pipe is full."
+        }
+      ],
+      "mechanism_agreement": "split",
+      "quorum": 2,
+      "reviewers": [
+        "bugbot",
+        "devin"
+      ],
+      "lane": "agreed",
+      "p_tag": "P1",
+      "validation": {
+        "mode": "escalate"
+      },
+      "locations": [
+        {
+          "file": "src/a.ts",
+          "lines": [
+            40,
+            40
+          ],
+          "from": "bugbot-1"
+        },
+        {
+          "file": "src/b.ts",
+          "lines": [
+            30,
+            31
+          ],
+          "from": "devin-1"
+        }
+      ],
+      "disposition_history": [],
+      "members": [
+        {
+          "id": "bugbot-1",
+          "reviewer": "bugbot",
+          "file": "src/a.ts",
+          "lines": [
+            40,
+            40
+          ],
+          "url": "https://github.com/o/r/pull/7#discussion_r1001",
+          "comment_id": 1001,
+          "node_id": "PRRC_bugbot-1",
+          "outdated": false
+        },
+        {
+          "id": "devin-1",
+          "reviewer": "devin",
+          "file": "src/b.ts",
+          "lines": [
+            30,
+            31
+          ],
+          "url": "https://github.com/o/r/pull/7#discussion_r1002",
+          "comment_id": 1002,
+          "node_id": "PRRC_devin-1",
+          "outdated": false
+        }
+      ]
+    },
+    {
+      "cluster_id": "c4",
+      "member_ids": [
+        "bugbot-2",
+        "greptile-2"
+      ],
+      "canonical_title": "Unused import",
+      "canonical_description": "Unused import.",
+      "category": "style",
+      "severity": "minor",
+      "primary_location": {
+        "file": "src/e.ts",
+        "start_line": 3,
+        "end_line": 3
+      },
+      "match_type": "exact",
+      "match_confidence": 0.95,
+      "cross_file": false,
+      "match_rationale": "Both flag the same unused import on the same line.",
+      "mechanisms_claimed": [
+        {
+          "reviewer": "bugbot",
+          "member_id": "bugbot-2",
+          "mechanism": "The os import is never used."
+        },
+        {
+          "reviewer": "greptile",
+          "member_id": "greptile-2",
+          "mechanism": "The os import is never used."
+        }
+      ],
+      "mechanism_agreement": "compatible",
+      "quorum": 2,
+      "reviewers": [
+        "bugbot",
+        "greptile"
+      ],
+      "lane": "agreed",
+      "p_tag": "P2",
+      "validation": {
+        "mode": "escalate"
+      },
+      "locations": [
+        {
+          "file": "src/e.ts",
+          "lines": [
+            3,
+            3
+          ],
+          "from": "bugbot-2"
+        }
+      ],
+      "disposition_history": [],
+      "members": [
+        {
+          "id": "bugbot-2",
+          "reviewer": "bugbot",
+          "file": "src/e.ts",
+          "lines": [
+            3,
+            3
+          ],
+          "url": "https://github.com/o/r/pull/7#discussion_r1005",
+          "comment_id": 1005,
+          "node_id": "PRRC_bugbot-2",
+          "outdated": false
+        },
+        {
+          "id": "greptile-2",
+          "reviewer": "greptile",
+          "file": "src/e.ts",
+          "lines": [
+            3,
+            3
+          ],
+          "url": "https://github.com/o/r/pull/7#discussion_r1006",
+          "comment_id": 1006,
+          "node_id": "PRRC_greptile-2",
+          "outdated": false
+        }
+      ]
+    },
+    {
+      "cluster_id": "c2",
+      "member_ids": [
+        "devin-2"
+      ],
+      "canonical_title": "Retry loop runs one extra attempt",
+      "canonical_description": "Retry loop runs one extra attempt.",
+      "category": "logic",
+      "severity": "major",
+      "primary_location": {
+        "file": "src/c.ts",
+        "start_line": 5,
+        "end_line": 5
+      },
+      "match_type": "singleton",
+      "match_confidence": 1.0,
+      "cross_file": false,
+      "quorum": 1,
+      "reviewers": [
+        "devin"
+      ],
+      "lane": "solo",
+      "p_tag": "P1",
+      "validation": {
+        "mode": "prove_or_kill",
+        "cheapest_check": "Call retry(0) and count attempts."
+      },
+      "locations": [
+        {
+          "file": "src/c.ts",
+          "lines": [
+            5,
+            5
+          ],
+          "from": "devin-2"
+        }
+      ],
+      "mechanisms_claimed": [],
+      "disposition_history": [],
+      "members": [
+        {
+          "id": "devin-2",
+          "reviewer": "devin",
+          "file": "src/c.ts",
+          "lines": [
+            5,
+            5
+          ],
+          "url": "https://github.com/o/r/pull/7#discussion_r1003",
+          "comment_id": 1003,
+          "node_id": "PRRC_devin-2",
+          "outdated": false
+        }
+      ]
+    },
+    {
+      "cluster_id": "c3",
+      "member_ids": [
+        "greptile-1"
+      ],
+      "canonical_title": "Variable shadows the import",
+      "canonical_description": "Variable shadows the import.",
+      "category": "style",
+      "severity": "minor",
+      "primary_location": {
+        "file": "src/d.ts",
+        "start_line": 7,
+        "end_line": 9
+      },
+      "match_type": "singleton",
+      "match_confidence": 1.0,
+      "cross_file": false,
+      "quorum": 1,
+      "reviewers": [
+        "greptile"
+      ],
+      "lane": "solo",
+      "p_tag": "P2",
+      "validation": {
+        "mode": "prove_or_kill"
+      },
+      "locations": [
+        {
+          "file": "src/d.ts",
+          "lines": [
+            7,
+            9
+          ],
+          "from": "greptile-1"
+        }
+      ],
+      "mechanisms_claimed": [],
+      "disposition_history": [],
+      "members": [
+        {
+          "id": "greptile-1",
+          "reviewer": "greptile",
+          "file": "src/d.ts",
+          "lines": [
+            7,
+            9
+          ],
+          "url": "https://github.com/o/r/pull/7#discussion_r1004",
+          "comment_id": 1004,
+          "node_id": "PRRC_greptile-1",
+          "outdated": false
+        }
+      ]
+    }
+  ],
+  "deferred": [],
+  "timeline": {},
+  "orphaned_dispositions": []
+}
