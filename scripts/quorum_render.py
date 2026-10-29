@@ -32,6 +32,11 @@ STAR_LABEL_CHARS = 60  # the chokepoint label on the star fallback
 NOTE_LIMIT = 400       # one note or invariant in the brief; also the minimal embedded note
 SIBLING_LIMIT = 10     # siblings kept by the third shrink level
 RISK_ORDER = {"likely": 0, "possible": 1, "unlikely": 2}
+HEAD_CHARS = 7         # the head SHA as shown in the header
+ESCALATION_KEYS = ("verdict", "invariant", "chokepoint", "test")  # what the minimal doc keeps
+# Words that break a mermaid flowchart when used as a node id.
+MERMAID_RESERVED = {"end", "graph", "class", "style", "subgraph", "flowchart", "click",
+                    "linkStyle", "classDef", "default"}
 
 PENDING_LINES = {
     "agreed": "→ escalate · invariant · sibling sweep · fix brief",
@@ -68,6 +73,21 @@ def one_line(text, limit=None):
     if limit is not None and len(flat) > limit:
         return flat[:limit - 1].rstrip() + "…"
     return flat
+
+
+def plain(text, limit=None):
+    """`one_line` for a value that is not prose (an id, a name, a SHA, a verdict):
+    backticks go too, so it can sit inside a code span or a link without
+    breaking the row."""
+    return one_line(text, limit).replace("`", "'")
+
+
+def link_url(url):
+    """`url` as a markdown link destination: whitespace, parentheses, angle
+    brackets and backticks percent-encoded; "" when there is no url."""
+    if not url:
+        return ""
+    return re.sub(r"[\s()<>`]", lambda m: f"%{ord(m.group()):02X}", str(url))
 
 
 def plural(count, noun):
@@ -115,7 +135,7 @@ def title_of(cluster):
 
 
 def p_tag_of(cluster):
-    return cluster.get("p_tag") or P_TAG.get(cluster.get("severity")) or "—"
+    return plain(cluster.get("p_tag") or P_TAG.get(cluster.get("severity")) or "—")
 
 
 def cluster_location(cluster):
@@ -130,9 +150,15 @@ def cluster_location(cluster):
     return "?"
 
 
+def member_link(member):
+    label = plain(member.get("id")).replace("[", "\\[").replace("]", "\\]")
+    url = link_url(member.get("url"))
+    return f"[{label}]({url})" if url else label
+
+
 def member_links(cluster):
     members = cluster.get("members") or [{"id": i} for i in cluster.get("member_ids") or []]
-    return ", ".join(f"[{m['id']}]({m['url']})" if m.get("url") else str(m["id"]) for m in members)
+    return ", ".join(member_link(m) for m in members)
 
 
 def reviewer_names(doc):
@@ -140,7 +166,7 @@ def reviewer_names(doc):
     names = set(doc.get("reviewers") or {})
     if not names:
         names = {r for c in doc["clusters"] for r in c.get("reviewers") or []}
-    return sorted(names)
+    return sorted(plain(name) for name in names)
 
 
 def lane_clusters(doc, lane):
@@ -173,16 +199,21 @@ def map_nodes_and_edges(cluster):
              for i, loc in enumerate(locations)]
     nodes += [(f"sib{i}", format_location(sib["file"], sib.get("lines")), "sibling")
               for i, sib in enumerate(siblings)]
+    if not nodes:
+        return [], []
     edges = [(node_id, "fix") for node_id, _, _ in nodes]
     return nodes + [("fix", chokepoint, "fix")], edges
 
 
 def mermaid_ids(raw_ids):
-    """raw id -> an id of [A-Za-z0-9_] only. Two raw ids that sanitise alike
-    stay distinct (`a-b` and `a_b` become `a_b` and `a_b_2`)."""
+    """raw id -> an id of [A-Za-z0-9_] only, never a mermaid keyword (`end`
+    becomes `end_n`). Two raw ids that sanitise alike stay distinct (`a-b` and
+    `a_b` become `a_b` and `a_b_2`)."""
     taken, ids = set(), {}
     for raw in raw_ids:
         base = re.sub(r"[^A-Za-z0-9_]", "_", str(raw)) or "_"
+        if base in MERMAID_RESERVED:
+            base += "_n"
         candidate, n = base, 2
         while candidate in taken:
             candidate, n = f"{base}_{n}", n + 1
@@ -228,9 +259,9 @@ def render_disposition_line(cluster):
     if not d:
         return PENDING_LINES[lane_of(cluster)]
     stale = bool(d.get("stale"))
-    parts = [STALE_LABEL if stale else VERDICT_LABELS.get(d.get("verdict"), str(d.get("verdict")))]
+    parts = [STALE_LABEL if stale else VERDICT_LABELS.get(d.get("verdict"), plain(d.get("verdict")))]
     if d.get("commit"):
-        parts.append(f"fixed `{d['commit']}`")
+        parts.append(f"fixed `{plain(d['commit'])}`")
     if d.get("note"):
         parts.append(one_line(d["note"], NOTE_LIMIT))
     if not stale and d.get("verdict") in OPEN_VERDICTS and not d.get("evidence"):
@@ -243,9 +274,9 @@ def render_cluster_row(cluster, doc):
     agreed cluster, the invariant and its map."""
     denominator = (doc.get("totals") or {}).get("reviewer_denominator")
     lines = [
-        f"- **{p_tag_of(cluster)}** {title_of(cluster)} · `{cluster_location(cluster)}` · "
-        f"{cluster.get('quorum')}/{denominator} {', '.join(cluster.get('reviewers') or [])} · "
-        f"{member_links(cluster)}",
+        f"- **{p_tag_of(cluster)}** {title_of(cluster)} · `{plain(cluster_location(cluster))}` · "
+        f"{plain(cluster.get('quorum'))}/{plain(denominator)} "
+        f"{', '.join(plain(r) for r in cluster.get('reviewers') or [])} · {member_links(cluster)}",
         "  " + render_disposition_line(cluster),
     ]
     escalation = cluster.get("escalation")
@@ -281,10 +312,10 @@ def render_deferred_section(doc):
 def render_header(doc):
     totals = doc.get("totals") or {}
     reviewers = totals.get("reviewer_denominator", len(reviewer_names(doc)))
-    parts = ([f"head `{doc['head']}`"] if doc.get("head") else [])
+    parts = ([f"head `{plain(str(doc['head'])[:HEAD_CHARS])}`"] if doc.get("head") else [])
     parts.append(plural(reviewers, "reviewer"))
     if doc.get("generated_at"):
-        parts.append(f"updated {doc['generated_at']}")
+        parts.append(f"updated {plain(doc['generated_at'])}")
     return ["## 🤝 Quorum · triage brief", f"<sub>{' · '.join(parts)}</sub>"]
 
 
@@ -305,7 +336,7 @@ def render_gate_line(doc):
     if gate["was_blocked_by"]:
         parts.append(f"was blocked by {gate['was_blocked_by']}")
     if gate["fixed_commits"]:
-        parts.append(f"fixed in {', '.join(gate['fixed_commits'])}")
+        parts.append(f"fixed in {', '.join(plain(c) for c in gate['fixed_commits'])}")
     if gate["tests"]:
         parts.append(one_line(gate["tests"], NOTE_LIMIT))
     return " · ".join(parts)
@@ -360,7 +391,7 @@ def render_agent_layer(protocol_text, embedded):
         protocol_text.rstrip("\n"),
         "",
         "```json",
-        json.dumps(embedded, indent=2).replace("`", "\\u0060"),
+        json.dumps(embedded, indent=2, ensure_ascii=False).replace("`", "\\u0060"),
         "```",
         "</details>",
     ]
@@ -398,15 +429,25 @@ def with_top_siblings(doc):
     return out
 
 
+def minimal_escalation(escalation):
+    """The escalation's verdict, invariant, chokepoint and test, cut to
+    NOTE_LIMIT; None when the cluster has no escalation."""
+    if not escalation:
+        return None
+    return cap_strings({key: escalation[key] for key in ESCALATION_KEYS if key in escalation}, NOTE_LIMIT)
+
+
 def minimal_doc(doc):
-    """What the Node CLI needs plus each cluster's disposition (its text cut to
-    NOTE_LIMIT), marked `truncated`."""
+    """What the Node CLI needs, the timeline, and per cluster its escalation
+    (reduced) and disposition (text cut to NOTE_LIMIT); marked `truncated`."""
     return {
         "schema": doc.get("schema"),
         "pr": doc.get("pr"),
         "head": doc.get("head"),
+        "generated_at": doc.get("generated_at"),
         "totals": copy.deepcopy(doc.get("totals")),
         "lanes": copy.deepcopy(doc.get("lanes")),
+        "timeline": copy.deepcopy(doc.get("timeline")),
         "truncated": True,
         "clusters": [
             {
@@ -415,6 +456,7 @@ def minimal_doc(doc):
                 "quorum": c.get("quorum"),
                 "reviewers": list(c.get("reviewers") or []),
                 "lane": lane_of(c),
+                "escalation": minimal_escalation(c.get("escalation")),
                 "disposition": cap_strings(c.get("disposition"), NOTE_LIMIT),
             }
             for c in doc["clusters"]

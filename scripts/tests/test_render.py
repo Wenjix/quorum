@@ -185,9 +185,13 @@ class RenderCommentTest(unittest.TestCase):
         ]))
         self.assertIn(star, render_comment(doc, PROTOCOL))
 
-        # No chokepoint, nothing to point the star at.
+        # No chokepoint, or no location or sibling to point at it: no star.
         c1["escalation"]["chokepoint"] = ""
         self.assertEqual(render_invariant_map(c1), "")
+        c1["escalation"]["chokepoint"] = "choke()"
+        lonely = copy.deepcopy(c1)
+        lonely["locations"], lonely["escalation"]["siblings"] = [], []
+        self.assertEqual(render_invariant_map(lonely), "")
 
         # 12 nodes is still a diagram; 13 is a bullet list of labels.
         c1["escalation"]["map"] = map_with(12)
@@ -297,6 +301,77 @@ class RenderCommentTest(unittest.TestCase):
         self.assertEqual(json.loads(match.group(1)), doc)
 
 
+class RowSafetyTest(unittest.TestCase):
+    def test_head_is_shortened_to_seven_characters(self):
+        doc = load("triage.json")
+        doc["head"] = "0123456789abcdef0123456789abcdef01234567"
+        body = render_comment(doc, PROTOCOL)
+        self.assertIn("<sub>head `0123456` · 3 reviewers", body)
+        self.assertNotIn("01234567", body.split("<details>")[0])
+        self.assertIn('"head": "0123456789abcdef0123456789abcdef01234567"', body)  # the doc keeps it whole
+
+    def test_mermaid_keywords_are_not_used_as_node_ids(self):
+        c1 = cluster(load("triage.ledger.json"), "c1")
+        words = ["end", "graph", "class", "style", "subgraph", "flowchart", "click",
+                 "linkStyle", "classDef", "default"]
+        c1["escalation"]["map"] = {
+            "nodes": [{"id": word, "label": word, "kind": "break"} for word in words]
+                     + [{"id": "end_n", "label": "taken", "kind": "fix"},
+                        {"id": "End", "label": "capitalised is fine", "kind": "fix"}],
+            "edges": [["end", "End"], ["graph", "end_n"]],
+        }
+        drawn = render_invariant_map(c1)
+        for word in words:
+            self.assertIn(f'  {word}_n["{word}"]:::break', drawn)
+        self.assertIn('  end_n_2["taken"]:::fix', drawn)  # the keyword's new id was already in use
+        self.assertIn('  End["capitalised is fine"]:::fix', drawn)
+        self.assertIn("  end_n --> End", drawn)
+        self.assertIn("  graph_n --> end_n_2", drawn)
+        self.assertNotIn("  end[", drawn)
+
+        # An id that only sanitises to a keyword is renamed too.
+        c1["escalation"]["map"] = {"nodes": [{"id": "e nd", "label": "x", "kind": "fix"},
+                                             {"id": "end", "label": "y", "kind": "fix"}], "edges": []}
+        self.assertEqual(render_invariant_map(c1).splitlines()[2:4], ['  e_nd["x"]:::fix', '  end_n["y"]:::fix'])
+
+    def test_embedded_json_keeps_non_ascii_text_verbatim(self):
+        doc = load("triage.ledger.json")
+        cluster(doc, "c1")["disposition"]["note"] = "12万 → 120000 `次`"
+        body = render_comment(doc, PROTOCOL)
+        fenced = body.split("```json\n")[1]
+        self.assertIn('"note": "12万 → 120000 \\u0060次\\u0060"', fenced)  # verbatim; backticks still escaped
+        self.assertNotIn("\\u4e07", fenced)
+        self.assertEqual(extract_doc(body), doc)
+        self.assertIn("  ✅ valid · fixed `ba814e4` · 12万 → 120000 `次`", body)  # and in the brief
+
+    def test_row_values_are_single_line_and_fence_safe(self):
+        doc = load("triage.ledger.json")
+        c1, c2 = cluster(doc, "c1"), cluster(doc, "c2")
+        c1["disposition"]["commit"] = 'ba8`14e4\n```json\n{"clusters": []}'
+        c2["disposition"]["verdict"] = "wei`rd\nverdict"
+        c1["reviewers"] = ["bug`bot", "dev\nin"]
+        c1["members"][0].update(id="a]b[c`", url="https://x.test/a b)(c\n```json")
+        c1["members"][1]["url"] = None
+        doc["reviewers"] = {"bug`bot": 1, "dev\nin": 1, "greptile": 1}
+        doc["head"] = "ab`cdef0123"
+        body = render_comment(doc, PROTOCOL)
+        brief = body.split("<details>")[0]
+        self.assertEqual(body.count("```json"), 1)  # only the real fence
+        self.assertIn("  ✅ valid · fixed `ba8'14e4 '''json {\"clusters\": []}` · both reviewers right", brief)
+        self.assertIn("  wei'rd verdict · fixed `ba814e4` · off by one confirmed", brief)
+        self.assertIn("2/3 bug'bot, dev in · [a\\]b\\[c'](https://x.test/a%20b%29%28c%0A%60%60%60json), devin-1",
+                      brief)
+        self.assertIn("<sub>head `ab'cdef` · 3 reviewers", brief)
+        self.assertIn("from bug'bot, dev in, greptile → ", brief)
+        self.assertEqual(extract_doc(body), doc)  # the embedded doc keeps every original string
+        self.assertEqual(len([l for l in brief.splitlines() if l.startswith("- **")]), 4)
+        # The gate line's commits go through the same sanitiser.
+        self.assertEqual(
+            render_gate_line(doc),
+            "**✅ Merge gate clear** · was blocked by 1 · "
+            "fixed in ba8'14e4 '''json {\"clusters\": []}, ba814e4")
+
+
 class ShrinkTest(unittest.TestCase):
     def test_shrink_levels_keep_body_under_limit(self):
         doc = inflate(load("triage.ledger.json"), note_len=70000)
@@ -324,13 +399,41 @@ class ShrinkTest(unittest.TestCase):
         self.assertEqual(no_urls["clusters"][0]["escalation"], doc["clusters"][0]["escalation"])
 
         minimal = levels[3]
-        self.assertEqual(list(minimal), ["schema", "pr", "head", "totals", "lanes", "truncated", "clusters"])
+        self.assertEqual(list(minimal), ["schema", "pr", "head", "generated_at", "totals", "lanes",
+                                         "timeline", "truncated", "clusters"])
         self.assertIs(minimal["truncated"], True)
+        self.assertEqual(minimal["timeline"], doc["timeline"])
+        self.assertEqual(minimal["generated_at"], doc["generated_at"])
         self.assertEqual(
             list(minimal["clusters"][0]),
-            ["cluster_id", "member_ids", "quorum", "reviewers", "lane", "disposition"])
+            ["cluster_id", "member_ids", "quorum", "reviewers", "lane", "escalation", "disposition"])
+        self.assertEqual(minimal["clusters"][0]["escalation"], {
+            key: doc["clusters"][0]["escalation"][key]
+            for key in ("verdict", "invariant", "chokepoint", "test")})
+        self.assertIsNone(minimal["clusters"][2]["escalation"])  # c2 has none
         self.assertEqual(minimal["clusters"][0]["disposition"], doc["clusters"][0]["disposition"])
         self.assertTrue(accepted_by_node_cli(minimal))
+
+    def test_minimal_level_keeps_the_timeline_and_the_invariant(self):
+        ledger = load("triage.ledger.json")
+        cluster(ledger, "c1")["escalation"]["invariant"] += " " + "z" * 70000
+        body = render_comment(inflate(ledger, 70000), PROTOCOL)
+        self.assertLessEqual(len(body), MAX_BODY)
+        recovered = extract_doc(body)
+        self.assertIs(recovered["truncated"], True)
+        self.assertEqual(recovered["timeline"], ledger["timeline"])
+        self.assertEqual(list(cluster(recovered, "c1")["escalation"]),
+                         ["verdict", "invariant", "chokepoint", "test"])
+        self.assertLessEqual(len(cluster(recovered, "c1")["escalation"]["invariant"]), 400)
+
+        # What the ledger CLI will do next: render again from the recovered doc.
+        again = render_comment(recovered, PROTOCOL)
+        self.assertIn("<sub>Quorum · plan 13:02 → validated 13:44 → fixed 13:44 · quorum/triage@1</sub>", again)
+        self.assertIn("  Invariant: Every write to the pipe must report how many bytes it accepted", again)
+        self.assertIn("updated 2026-10-29T12:00:00+00:00", again)
+        self.assertIn("**✅ Merge gate clear**", again.split("<details>")[0])
+        self.assertNotIn("```mermaid", again)  # nothing is left to point the chokepoint at
+        self.assertEqual(extract_doc(again)["timeline"], ledger["timeline"])
 
     def test_siblings_are_cut_to_ten_by_risk(self):
         doc = load("triage.ledger.json")
