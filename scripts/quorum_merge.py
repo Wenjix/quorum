@@ -19,8 +19,30 @@ def member_comment_ids(cluster: dict) -> set[int]:
     return {m["comment_id"] for m in cluster.get("members") or [] if m.get("comment_id") is not None}
 
 
-def _at(cluster: dict) -> str:
-    return latest_disposition(cluster).get("at") or ""
+def _candidates(prior):
+    """Everything in `prior` that holds a disposition and can pass it on: its
+    clusters, then the orphans an earlier run left behind (which carry their
+    original entry under `entry`). Each is {cluster_id, ids, disposition,
+    history[, escalation][, entry]}."""
+    found = []
+    for c in prior["clusters"]:
+        if latest_disposition(c):
+            found.append({"cluster_id": c["cluster_id"], "ids": member_comment_ids(c),
+                          "disposition": latest_disposition(c),
+                          "history": c.get("disposition_history") or [],
+                          **({"escalation": c["escalation"]} if "escalation" in c else {})})
+    for o in prior.get("orphaned_dispositions") or []:
+        if o.get("disposition"):
+            found.append({"cluster_id": o.get("cluster_id"), "ids": set(o.get("member_comment_ids") or []),
+                          "disposition": o["disposition"],
+                          "history": o.get("disposition_history") or [],
+                          **({"escalation": o["escalation"]} if "escalation" in o else {}),
+                          "entry": o})
+    return found
+
+
+def _at(candidate):
+    return candidate["disposition"].get("at") or ""
 
 
 def _is_stale(cluster, head_moved, changed_files):
@@ -41,50 +63,57 @@ def inherit(new_doc: dict, prior_doc: dict | None, changed_files: list[str] | No
     The prior cluster with the newest `disposition.at` wins: the successor takes
     its `disposition`, `disposition_history` and `escalation`, and each other
     matching prior cluster's history and latest disposition are appended to the
-    successor's history. A carried disposition gets `stale: True` when the head
-    moved and `changed_files` (the files changed between the two heads, or None
-    when unknown) names one of the successor's `locations[].file`. Prior
-    clusters with a disposition and no successor go to `orphaned_dispositions`.
-    `timeline` is taken from the prior document when the new one has no
-    `plan_at`. A legacy (pre-schema) prior document carries nothing.
+    successor's history (a loser's escalation is dropped). Orphans left by an
+    earlier run (`prior_doc["orphaned_dispositions"]`) match and compete the same
+    way, by `member_comment_ids`. A carried disposition gets `stale: True` when
+    the head moved and `changed_files` (the files changed between the two heads,
+    or None when unknown) names one of the successor's `locations[].file`.
+    Dispositions with no successor stay in `orphaned_dispositions`: earlier
+    orphans first, then this run's, deduped on their sorted comment ids (the
+    first is kept). `timeline` is taken from the prior document when the new one
+    has no `plan_at`. A legacy (pre-schema) prior document carries nothing.
     """
     out = copy.deepcopy(new_doc)
     if not prior_doc:
         return out
     prior = upgrade_legacy(prior_doc)
 
-    disposed = [(c, member_comment_ids(c)) for c in prior["clusters"] if latest_disposition(c)]
+    candidates = _candidates(prior)
     head_moved = prior.get("head") != out.get("head")
     matched = set()
 
     for cluster in out["clusters"]:
         ids = member_comment_ids(cluster)
-        # sorted() is stable, so equal `at` keeps prior document order: the first wins.
-        matches = sorted((c for c, prior_ids in disposed if ids & prior_ids), key=_at, reverse=True)
+        # sorted() is stable, so equal `at` keeps candidate order: the first wins.
+        matches = sorted((c for c in candidates if ids & c["ids"]), key=_at, reverse=True)
         if not matches:
             continue
         winner, losers = matches[0], matches[1:]
         matched.update(id(c) for c in matches)
 
-        cluster["disposition"] = copy.deepcopy(latest_disposition(winner))
-        history = copy.deepcopy(winner.get("disposition_history") or [])
+        cluster["disposition"] = copy.deepcopy(winner["disposition"])
+        history = copy.deepcopy(winner["history"])
         for loser in reversed(losers):  # oldest first
-            history += copy.deepcopy(loser.get("disposition_history") or [])
-            history.append(copy.deepcopy(latest_disposition(loser)))
+            history += copy.deepcopy(loser["history"])
+            history.append(copy.deepcopy(loser["disposition"]))
         cluster["disposition_history"] = history
         if "escalation" in winner:
             cluster["escalation"] = copy.deepcopy(winner["escalation"])
         if _is_stale(cluster, head_moved, changed_files):
             cluster["disposition"]["stale"] = True
 
-    out.setdefault("orphaned_dispositions", []).extend(
-        {
-            "cluster_id": c["cluster_id"],
-            "member_comment_ids": sorted(prior_ids),
-            "disposition": copy.deepcopy(latest_disposition(c)),
-        }
-        for c, prior_ids in disposed if id(c) not in matched
-    )
+    unmatched = [c for c in candidates if id(c) not in matched]
+    earlier = [copy.deepcopy(c["entry"]) for c in unmatched if "entry" in c]
+    fresh = [{"cluster_id": c["cluster_id"], "member_comment_ids": sorted(c["ids"]),
+              "disposition": copy.deepcopy(c["disposition"])}
+             for c in unmatched if "entry" not in c]
+    orphans, seen = [], set()
+    for o in (out.get("orphaned_dispositions") or []) + earlier + fresh:
+        key = tuple(sorted(o.get("member_comment_ids") or []))
+        if key not in seen:
+            seen.add(key)
+            orphans.append(o)
+    out["orphaned_dispositions"] = orphans
 
     if not (out.get("timeline") or {}).get("plan_at") and prior.get("timeline"):
         out["timeline"] = copy.deepcopy(prior["timeline"])

@@ -140,6 +140,47 @@ class CarryTest(unittest.TestCase):
                 self.assertEqual(c9["disposition_history"], [new_history, old_history, old])
                 self.assertEqual(out["orphaned_dispositions"], [])
 
+    def test_history_of_three_matches_runs_oldest_loser_first(self):
+        # Prior document order is c1, c2, c3, but by time c3 < c1 < c2, so neither
+        # document order nor newest-first would give the expected history.
+        h = {k: disposition(f"2026-10-29T10:{m}:00+00:00", v)
+             for k, (m, v) in {"w_hist": ("08", "partly"), "c1_hist": ("05", "deferred"),
+                               "c3_hist": ("02", "invalid"), "c1": ("06", "valid"),
+                               "c2": ("09", "valid"), "c3": ("03", "invalid")}.items()}
+        prior = with_dispositions(load(), c1=(h["c1"], [h["c1_hist"]]), c2=(h["c2"], [h["w_hist"]]),
+                                  c3=(h["c3"], [h["c3_hist"]]))
+        new = renumber(load(), "c1", "c9", [1001, 1003])
+        c9 = cluster(new, "c9")
+        c9["members"].append({**c9["members"][0], "id": "x-1", "comment_id": 1004})
+        new["clusters"] = [c for c in new["clusters"] if c["cluster_id"] not in ("c2", "c3")]
+
+        out = inherit(new, prior, [])
+
+        self.assertEqual(cluster(out, "c9")["disposition"], h["c2"])
+        self.assertEqual(cluster(out, "c9")["disposition_history"],
+                         [h["w_hist"], h["c3_hist"], h["c3"], h["c1_hist"], h["c1"]])
+        self.assertEqual(out["orphaned_dispositions"], [])
+
+    def test_only_the_winners_escalation_is_carried(self):
+        old = disposition("2026-10-29T10:01:00+00:00")
+        new_ = disposition("2026-10-29T10:09:00+00:00")
+        for winner_has_escalation in (True, False):
+            with self.subTest(winner_has_escalation=winner_has_escalation):
+                prior = with_dispositions(load(), c1=old, c2=new_)
+                cluster(prior, "c1")["escalation"] = {"invariant": "from the loser"}
+                if winner_has_escalation:
+                    cluster(prior, "c2")["escalation"] = {"invariant": "from the winner"}
+                new = renumber(load(), "c1", "c9", [1001, 1003])
+                new["clusters"] = [c for c in new["clusters"] if c["cluster_id"] != "c2"]
+
+                out = inherit(new, prior, [])
+
+                c9 = cluster(out, "c9")
+                if winner_has_escalation:
+                    self.assertEqual(c9["escalation"], {"invariant": "from the winner"})
+                else:
+                    self.assertNotIn("escalation", c9)
+
     def test_prior_cluster_without_disposition_contributes_nothing(self):
         prior = load()  # no dispositions anywhere
         new = renumber(load(), "c1", "c9")
@@ -227,6 +268,115 @@ class OrphanTest(unittest.TestCase):
         out = inherit(new, prior, [])
 
         self.assertEqual(out["orphaned_dispositions"][0]["member_comment_ids"], [1001, 1002])
+
+
+def orphan_entry(cluster_id, comment_ids, d, **extra):
+    return {"cluster_id": cluster_id, "member_comment_ids": comment_ids, "disposition": d, **extra}
+
+
+def without(doc, *cluster_ids):
+    out = copy.deepcopy(doc)
+    out["clusters"] = [c for c in out["clusters"] if c["cluster_id"] not in cluster_ids]
+    return out
+
+
+class EarlierOrphanTest(unittest.TestCase):
+    """Orphans recorded by an earlier run stay in play on every later run."""
+
+    def setUp(self):
+        self.d1 = disposition("2026-10-29T10:05:00+00:00")
+        self.d2 = disposition("2026-10-29T10:06:00+00:00", "invalid")
+        # Run N: c2 vanished from the clustering, so its disposition became an orphan.
+        run_n = inherit(without(load(), "c2"), with_dispositions(load(), c1=self.d1, c2=self.d2), [])
+        self.assertEqual(run_n["orphaned_dispositions"], [orphan_entry("c2", [1003], self.d2)])
+        self.run_n = run_n
+
+    def test_an_orphan_from_run_n_survives_into_run_n_plus_1_unchanged(self):
+        before = copy.deepcopy(self.run_n)
+
+        # Same head, and again with the head moved and the changed files unknown:
+        # the live cluster c1 goes stale in the second run, the unmatched orphan never does.
+        for doc, c1_stale in ((without(load(), "c2"), None), (moved(without(load(), "c2")), True)):
+            with self.subTest(c1_stale=c1_stale):
+                out = inherit(doc, self.run_n, None)
+
+                self.assertEqual(out["orphaned_dispositions"], before["orphaned_dispositions"])
+                self.assertIsNot(out["orphaned_dispositions"][0], self.run_n["orphaned_dispositions"][0])
+                self.assertIs(cluster(out, "c1")["disposition"].get("stale"), c1_stale)
+        self.assertEqual(self.run_n, before)
+
+    def test_an_orphan_reattaches_when_a_later_cluster_shares_a_comment_id(self):
+        new = renumber(load(), "c2", "c7")  # c7 is back, still holding comment 1003
+
+        out = inherit(new, self.run_n, [])
+
+        c7 = cluster(out, "c7")
+        self.assertEqual(c7["disposition"], self.d2)
+        self.assertEqual(c7["disposition_history"], [])
+        self.assertNotIn("escalation", c7)
+        self.assertEqual(out["orphaned_dispositions"], [])
+
+        # The stale rule applies to it like to any carried disposition (c2's file is src/c.ts).
+        for changed, stale in ((["src/c.ts"], True), (["other"], None), (None, True)):
+            with self.subTest(changed=changed):
+                out = inherit(moved(new), self.run_n, changed)
+                self.assertIs(cluster(out, "c7")["disposition"].get("stale"), stale)
+
+    def test_an_orphan_competes_on_at_with_a_live_prior_cluster(self):
+        live = disposition("2026-10-29T10:05:00+00:00", "partly")
+        live_history = disposition("2026-10-29T10:04:00+00:00", "deferred")
+        escalation = {"invariant": "from the orphan"}
+        for orphan_at, orphan_wins in (("2026-10-29T10:09:00+00:00", True), ("2026-10-29T10:01:00+00:00", False)):
+            with self.subTest(orphan_wins=orphan_wins):
+                old = disposition(orphan_at, "invalid")
+                old_history = disposition("2026-10-29T09:00:00+00:00", "deferred")
+                prior = with_dispositions(load(), c1=(live, [live_history]))
+                prior["orphaned_dispositions"] = [
+                    orphan_entry("c5", [1003], old, disposition_history=[old_history], escalation=escalation)]
+                # c9 holds comment 1001 (live prior c1) and 1003 (the orphan).
+                new = without(renumber(load(), "c1", "c9", [1001, 1003]), "c2")
+
+                out = inherit(new, prior, [])
+
+                c9 = cluster(out, "c9")
+                if orphan_wins:
+                    self.assertEqual(c9["disposition"], old)
+                    self.assertEqual(c9["disposition_history"], [old_history, live_history, live])
+                    self.assertEqual(c9["escalation"], escalation)
+                else:
+                    self.assertEqual(c9["disposition"], live)
+                    self.assertEqual(c9["disposition_history"], [live_history, old_history, old])
+                    self.assertNotIn("escalation", c9)
+                self.assertEqual(out["orphaned_dispositions"], [])
+
+    def test_orphans_dedupe_on_sorted_comment_ids_keeping_the_first(self):
+        first = orphan_entry("c2", [2001, 2002], self.d2)
+        again = orphan_entry("c2-again", [2002, 2001], self.d1)
+        other = orphan_entry("c5", [2000], self.d1)
+        prior = load()
+        prior["orphaned_dispositions"] = [first, again, other]
+
+        out = inherit(without(load(), "c2"), prior, [])
+
+        self.assertEqual(out["orphaned_dispositions"], [first, other])
+
+    def test_earlier_orphans_come_first_then_this_runs_without_duplicates(self):
+        d4 = disposition("2026-10-29T10:07:00+00:00", "partly")
+        earlier = orphan_entry("c2-old", [1003], self.d2)
+        # c2 shares comment 1003 with the earlier orphan, so it must not be listed twice; c4 is new.
+        prior = with_dispositions(load(), c2=disposition("2026-10-29T10:08:00+00:00", "valid"), c4=d4)
+        prior["orphaned_dispositions"] = [earlier]
+
+        out = inherit(without(load(), "c2", "c4"), prior, [])
+
+        self.assertEqual(out["orphaned_dispositions"],
+                         [earlier, orphan_entry("c4", [1005, 1006], d4)])
+
+    def test_the_orphan_list_is_stable_across_repeated_carries(self):
+        doc = self.run_n
+        for _ in range(3):
+            doc = inherit(without(load(), "c2"), doc, [])
+        self.assertEqual(doc["orphaned_dispositions"], [orphan_entry("c2", [1003], self.d2)])
 
 
 class LegacyAndTimelineTest(unittest.TestCase):
