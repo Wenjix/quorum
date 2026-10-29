@@ -44,7 +44,9 @@ def compute_gate(doc):
     `state` is "pending" before any cluster is disposed, "blocked" while any
     cluster blocks, else "clear". `pending_review` is the blocking subset that
     has no live disposition. `was_blocked_by` counts the gate-relevant clusters
-    the owner confirmed (valid or partly), fixed or not.
+    the owner confirmed (valid or partly), fixed or not. `fixed_commits` lists
+    each commit once, in document order; `tests` is the note on the most
+    recently recorded disposition that has one.
     """
     clusters = doc["clusters"]
     started = triage_started(doc)
@@ -59,7 +61,10 @@ def compute_gate(doc):
     for d in live:
         if d.get("commit") and d["commit"] not in fixed_commits:
             fixed_commits.append(d["commit"])
-    tests = [d["tests"] for d in live if d.get("tests")]
+    # Most recent test note by `at`; sorted() is stable, so a tie goes to the
+    # cluster later in the document. (Document order alone is quorum/severity
+    # order, not time order.)
+    tested = sorted((d for d in live if d.get("tests")), key=lambda d: d.get("at") or "")
 
     if not started:
         state = "pending"
@@ -73,7 +78,7 @@ def compute_gate(doc):
         "pending_review": pending_review,
         "was_blocked_by": len(confirmed),
         "fixed_commits": fixed_commits,
-        "tests": tests[-1] if tests else None,
+        "tests": tested[-1]["tests"] if tested else None,
     }
 
 

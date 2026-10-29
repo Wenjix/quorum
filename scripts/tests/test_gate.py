@@ -175,7 +175,7 @@ class GateTest(unittest.TestCase):
         doc = with_disposition(doc, "c4", verdict="valid", note="n", commit="bbb2222")
         self.assertEqual(compute_gate(doc)["fixed_commits"], ["bbb2222", "aaa1111"])
 
-    def test_tests_is_the_last_non_empty_note(self):
+    def test_tests_is_the_most_recent_non_empty_note(self):
         doc = load("triage.json")
         self.assertIsNone(compute_gate(doc)["tests"])
         doc = with_disposition(doc, "c1", verdict="valid", note="n", commit="aaa1111", tests="npm test: 12 pass")
@@ -183,6 +183,37 @@ class GateTest(unittest.TestCase):
         self.assertEqual(compute_gate(doc)["tests"], "npm test: 12 pass")
         doc = with_disposition(doc, "c4", verdict="valid", note="n", commit="bbb2222", tests="pytest: 3 pass")
         self.assertEqual(compute_gate(doc)["tests"], "pytest: 3 pass")
+
+    def test_tests_follows_time_not_document_order(self):
+        # Fixture order is c1, c4, c2, c3. c2 is dispositioned first and c1 later,
+        # so the newest note sits on the cluster that comes first in the document.
+        doc = with_disposition(load("triage.json"), "c2", verdict="valid", note="n",
+                               commit="aaa1111", tests="OLD 10 pass")
+        doc = with_disposition(doc, "c1", verdict="valid", note="n", commit="bbb2222", tests="NEW 12 pass")
+        self.assertEqual(compute_gate(doc)["tests"], "NEW 12 pass")
+        # Reversing the document must not change which note is newest.
+        doc["clusters"].reverse()
+        self.assertEqual(compute_gate(doc)["tests"], "NEW 12 pass")
+        # fixed_commits is deliberately document order (first appearance), not time.
+        self.assertEqual(compute_gate(doc)["fixed_commits"], ["aaa1111", "bbb2222"])
+        doc["clusters"].reverse()
+        self.assertEqual(compute_gate(doc)["fixed_commits"], ["bbb2222", "aaa1111"])
+
+    def test_tests_tie_on_at_goes_to_the_later_cluster_in_the_document(self):
+        doc = with_disposition(load("triage.json"), "c1", verdict="valid", note="n", tests="first")
+        doc = with_disposition(doc, "c2", verdict="valid", note="n", tests="second")
+        for c in doc["clusters"]:
+            if "disposition" in c:
+                c["disposition"]["at"] = "2026-10-29T10:00:00+00:00"
+        self.assertEqual(compute_gate(doc)["tests"], "second")  # c2 follows c1 in the fixture
+        doc["clusters"].reverse()
+        self.assertEqual(compute_gate(doc)["tests"], "first")
+
+    def test_tests_note_without_at_loses_to_one_with_it(self):
+        doc = with_disposition(load("triage.json"), "c1", verdict="valid", note="n", tests="dated")
+        doc = with_disposition(doc, "c2", verdict="valid", note="n", tests="undated")
+        del doc["clusters"][2]["disposition"]["at"]  # c2 is after c1 in the fixture
+        self.assertEqual(compute_gate(doc)["tests"], "dated")
 
     def test_only_stale_dispositions_leave_the_gate_pending(self):
         doc = with_disposition(load("triage.json"), "c1", verdict="valid", note="n", commit="x", stale=True)
