@@ -321,10 +321,11 @@ disagree. Draft text, to be kept to roughly five lines:
    Quorum checkout (`scripts/quorum_ledger.py` in
    `github.com/Wenjix/quorum`) or, without one, from the pinned tag the
    protocol names:
-   `gh api repos/Wenjix/quorum/contents/scripts/quorum_ledger.py?ref=<tag> --jq .content | base64 -d`.
-   This works whether the repo is public or private, since the agent
-   already has `gh` auth for the PR. Tagging that release is part of
-   this work.
+   `gh api repos/Wenjix/quorum/tarball/<tag> > quorum.tgz && tar -xzf quorum.tgz`.
+   The tarball rather than a single file, because the ledger script
+   imports sibling modules and reads the protocol reference. This works
+   whether the repo is public or private, since the agent already has
+   `gh` auth for the PR. Tagging that release is part of this work.
 
 **Triage JSON**, `quorum/triage@1`, in a fenced `json` block. Top level:
 
@@ -393,10 +394,11 @@ Node CLI shells out to this script for every comment write, as
 
 Rules:
 
-- `dispose` without `--note` is an error. `--verdict` of anything other
-  than `invalid` or `deferred` combined with no `--evidence` is a
-  warning in the output but accepted; the human brief marks it
-  "no evidence recorded".
+- `dispose` with a new verdict and no `--note` is an error. A call that
+  only adds `--commit` or `--tests` to an existing disposition keeps the
+  prior verdict and note. `--verdict` of anything other than `invalid`
+  or `deferred` combined with no `--evidence` is a warning in the output
+  but accepted; the human brief marks it "no evidence recorded".
 - The latest disposition is rendered; all are kept in
   `disposition_history`.
 - `--reply` posts the verdict and note as a reply in each member's
