@@ -3,14 +3,16 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 
 import contextlib
+import datetime
 import io
 import json
+import os
 import tempfile
 import unittest
 from unittest import mock
 
 from fakes import FakeClient
-from quorum_doc import MARKER, SCHEMA, extract_doc
+from quorum_doc import MARKER, SCHEMA, extract_doc, now_iso
 from quorum_ledger import LEDGER_REF, main
 from quorum_render import load_protocol, minimal_doc, render_agent_layer, render_brief, render_comment
 
@@ -103,6 +105,49 @@ class PostPlanTest(unittest.TestCase):
         self.assertEqual(doc["gate"]["state"], "pending")
         self.assertEqual(doc["deferred"], [])
         self.assertTrue(doc["timeline"]["plan_at"])
+
+    def in_temp_cwd(self):
+        """Run the test from an empty working directory (where the priors cache lives)."""
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        previous = os.getcwd()
+        self.addCleanup(os.chdir, previous)
+        os.chdir(folder.name)
+        return pathlib.Path(folder.name)
+
+    def write_priors(self, cwd, generated_at, reviewers):
+        path = cwd / ".quorum" / "priors" / "o-r.json"
+        path.parent.mkdir(parents=True)
+        path.write_text(json.dumps({"generated_at": generated_at, "repo": "o/r", "reviewers": reviewers}))
+
+    def test_post_plan_embeds_fresh_cached_priors(self):
+        cwd = self.in_temp_cwd()
+        priors = load("priors.json")
+        self.write_priors(cwd, now_iso(), priors)
+        client = fake()
+        code, _, err = run(["post-plan", "o/r", "7", PLAN, "--no-reactions"], client)
+        self.assertEqual(code, 0, err)
+        self.assertEqual(written_doc(client)["priors"], priors)
+
+    def test_post_plan_ignores_stale_cached_priors(self):
+        cwd = self.in_temp_cwd()
+        eight_days_ago = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=8)).isoformat()
+        self.write_priors(cwd, eight_days_ago, load("priors.json"))
+        client = fake()
+        code, _, err = run(["post-plan", "o/r", "7", PLAN, "--no-reactions"], client)
+        self.assertEqual(code, 0, err)
+        self.assertEqual(written_doc(client)["priors"], {})
+
+    def test_priors_already_in_the_scored_file_beat_the_cache(self):
+        cwd = self.in_temp_cwd()
+        self.write_priors(cwd, now_iso(), load("priors.json"))
+        plan = load("triage.json")
+        embedded = {"devin": {"valid": 0.5, "partly": 0.25, "invalid": 0.25, "n": 8}}
+        plan["priors"] = embedded
+        client = fake()
+        code, _, err = run(["post-plan", "o/r", "7", temp_json(self, plan), "--no-reactions"], client)
+        self.assertEqual(code, 0, err)
+        self.assertEqual(written_doc(client)["priors"], embedded)
 
     def test_post_plan_dry_run_makes_no_writes(self):
         client = fake()

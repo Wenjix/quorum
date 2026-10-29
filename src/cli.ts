@@ -90,6 +90,10 @@ async function main(): Promise<void> {
     await triagePrCommand(parsed);
     return;
   }
+  if (parsed.command === "priors") {
+    await priorsCommand(parsed);
+    return;
+  }
   if (parsed.command === "setup") {
     await setupCommand();
     return;
@@ -413,6 +417,23 @@ async function synthesizeCommand(parsed: ParsedArgs): Promise<void> {
   }
 }
 
+// ---- priors command ----
+
+async function priorsCommand(parsed: ParsedArgs): Promise<void> {
+  const repo = requiredPositional(parsed, "OWNER/REPO");
+  const args = [join(repoScriptsDir(), "quorum_priors.py"), repo];
+  if (hasFlag(parsed, "out")) args.push("--out", requiredFlag(parsed, "out"));
+
+  try {
+    const { stdout } = await execFileAsync("python3", args);
+    console.log(stdout.trim());
+  } catch (error) {
+    const err = error as { stderr?: string; message?: string };
+    console.error(err.stderr || err.message || String(error));
+    throw new Error("quorum_priors.py failed.");
+  }
+}
+
 // ---- triage-pr command ----
 
 async function triagePrCommand(parsed: ParsedArgs): Promise<void> {
@@ -710,6 +731,7 @@ function printHelp(): void {
   quorum run-pr https://github.com/OWNER/REPO/pull/N [options]
   quorum post-pr https://github.com/OWNER/REPO/pull/N [options]
   quorum canvas .quorum/runs/run-id
+  quorum priors OWNER/REPO [--out PATH]
   quorum setup
   quorum eval [--log-dir .quorum/log]
   quorum explore --repo OWNER/REPO --pr N --scored clusters.scored.json [options]
@@ -722,6 +744,7 @@ Commands:
   run-pr              Run Cursor Cloud or Anthropic exploration (no PR comment by default).
   post-pr             Run exploration and upsert the PR exploration comment.
   canvas              Regenerate or open a Canvas from a saved run directory.
+  priors              Compute per-reviewer precision priors from past ledgers in a repo.
   setup               Validate prerequisites (Node, gh, jq, python3, API keys, skills).
   eval                Compute reviewer precision and success stats from run logs.
 

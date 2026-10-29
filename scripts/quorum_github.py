@@ -189,7 +189,7 @@ def _is_trusted(comment, login):
     return login is not None and author == login
 
 
-def find_marker_comment(client, repo, pr, marker):
+def find_marker_comment(client, repo, pr, marker, login=None):
     """The newest trusted issue comment whose body contains `marker`, as {id, body}.
 
     Anyone can comment on a public pull request, so a marker alone proves
@@ -200,11 +200,16 @@ def find_marker_comment(client, repo, pr, marker):
     or when GitHub reports its author as an OWNER, MEMBER or COLLABORATOR of
     the repository (`author_association`, compared exactly). Every other
     marker comment is ignored.
+
+    A caller that looks up many pull requests asks `get_authenticated_login`
+    once and passes the answer as `login`, which is then used instead of
+    asking again.
     """
     comments = client.api("GET", f"repos/{repo}/issues/{pr}/comments",
                           params={"paginate": True}) or []
     hits = [c for c in comments if marker in (c.get("body") or "")]
-    login = get_authenticated_login(client) if hits else None
+    if login is None and hits:
+        login = get_authenticated_login(client)
     trusted = [c for c in hits if _is_trusted(c, login)]
     if not trusted:
         return None

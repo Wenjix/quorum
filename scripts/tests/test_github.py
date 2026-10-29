@@ -270,6 +270,15 @@ class FindMarkerCommentTrustTest(unittest.TestCase):
         self.assertIsNone(find_marker_comment(c, "o/r", 7, MARKER))
         self.assertNotIn("user", [call[1] for call in c.calls])
 
+    def test_a_given_login_replaces_the_get_user_lookup(self):
+        # The caller already asked who it is (once for many pull requests): trust that
+        # answer, do not ask again, and keep rejecting everyone else.
+        c = self.client([marker_comment(5, "quorum-bot"), marker_comment(9, "mallory")],
+                        me={"login": "someone-else"})
+        found = find_marker_comment(c, "o/r", 7, MARKER, login="quorum-bot")
+        self.assertEqual(found["id"], 5)
+        self.assertNotIn("user", [call[1] for call in c.calls])
+
 
 class DefaultClientTest(unittest.TestCase):
     def test_default_client_prefers_gh(self):

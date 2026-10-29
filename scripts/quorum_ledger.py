@@ -16,8 +16,10 @@ usage: quorum_ledger.py post-plan OWNER/REPO PR clusters.scored.json
        quorum_ledger.py show OWNER/REPO PR
 
 post-plan builds from the fresh scored file and inherits dispositions from the
-posted comment; dispose and escalate change the posted document (a truncated
-one is rebuilt from --scored first). An escalation file may carry `members`
+posted comment; unless the scored file already carries `priors`, it embeds the
+repository's cached ones (`quorum_priors.py`, ignored once a week old). dispose
+and escalate change the posted document (a truncated one is rebuilt from
+--scored first). An escalation file may carry `members`
 ({member_id: verdict}, checked as --member is) for the disposition it records.
 Reactions, minimising and replies are best-effort: a failure is counted, never
 fatal. --dry-run prints the body to stdout and the planned side effects to
@@ -27,6 +29,7 @@ stderr, and writes nothing.
 from __future__ import annotations
 
 import argparse
+import datetime
 import json
 import re
 import sys
@@ -35,6 +38,7 @@ import quorum_github as gh
 from quorum_doc import MARKER, extract_doc, latest_disposition, now_iso, upgrade_legacy
 from quorum_gate import compute_deferred, compute_gate, compute_timeline
 from quorum_merge import inherit
+from quorum_priors import default_path, load_fresh_priors
 from quorum_render import MAX_BODY, load_protocol, render_comment
 
 LEDGER_REF = "v0.3.0"
@@ -166,6 +170,8 @@ def cmd_post_plan(args, client):
                   "this plan or was kept as an orphan", file=sys.stderr)
     doc["timeline"] = dict(doc.get("timeline") or {})
     doc["timeline"]["plan_at"] = doc["timeline"].get("plan_at") or now_iso()
+    if not doc.get("priors"):  # priors embedded by validate_partition.py --priors win
+        doc["priors"] = load_fresh_priors(default_path(args.repo), datetime.datetime.now(datetime.timezone.utc))
     body = finalize(doc, prior)
 
     effects = {}
