@@ -32,7 +32,6 @@ export function selectClusters(
   doc: ScoredClustersDoc,
   options: ClusterSelectionOptions = {},
 ): ScoredCluster[] {
-  const minQuorum = options.minQuorum ?? 2;
   let selected: ScoredCluster[];
 
   if (options.clusterIds && options.clusterIds.length > 0) {
@@ -44,7 +43,11 @@ export function selectClusters(
     if (missing.length > 0) {
       throw new Error(`Unknown cluster id(s): ${missing.join(", ")}`);
     }
+  } else if (options.minQuorum === undefined && doc.clusters.some((cluster) => typeof cluster.lane === "string")) {
+    // quorum/triage@1 documents carry the lane split; the agreed lane is the default selection.
+    selected = doc.clusters.filter((cluster) => cluster.lane === "agreed");
   } else {
+    const minQuorum = options.minQuorum ?? 2;
     selected = doc.clusters.filter((cluster) => cluster.quorum >= minQuorum);
   }
 

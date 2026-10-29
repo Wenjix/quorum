@@ -79,6 +79,22 @@ export function sampleScoredDoc(): ScoredClustersDoc {
   };
 }
 
+export function sampleTriageDoc(): ScoredClustersDoc {
+  const base = sampleScoredDoc();
+  const [c1, c2] = base.clusters;
+  return {
+    ...base,
+    schema: "quorum/triage@1",
+    pr: "OWNER/REPO#1",
+    head: "0123456789abcdef0123456789abcdef01234567",
+    lanes: { agreed: ["c1"], solo: ["c2"] },
+    clusters: [
+      { ...c1, lane: "agreed", p_tag: "P1" },
+      { ...c2, lane: "solo", p_tag: "P3" },
+    ],
+  };
+}
+
 export class FakeAdapter implements TaskRunnerAdapter {
   readonly prompts = new Map<string, string>();
   constructor(

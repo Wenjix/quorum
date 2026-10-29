@@ -30,9 +30,19 @@ export interface ScoredCluster {
   quorum: number;
   reviewers: string[];
   members: FindingMember[];
+  /** quorum/triage@1: "agreed" (two or more reviewers) or "solo". */
+  lane?: "agreed" | "solo" | string;
+  p_tag?: string;
+  /** Written by quorum_ledger.py; opaque to the exploration runner. */
+  disposition?: unknown;
+  escalation?: unknown;
 }
 
 export interface ScoredClustersDoc {
+  /** "quorum/triage@1" for ledger documents; absent on the older scored shape. */
+  schema?: string;
+  pr?: string;
+  head?: string;
   generated_at?: string;
   totals: {
     findings: number;
@@ -40,6 +50,7 @@ export interface ScoredClustersDoc {
     reviewer_denominator: number;
     gate_split?: string[];
   };
+  lanes?: { agreed: string[]; solo: string[] };
   clusters: ScoredCluster[];
 }
 

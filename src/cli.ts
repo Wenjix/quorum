@@ -131,7 +131,7 @@ async function executeExplore(options: ExploreExecutionOptions): Promise<void> {
   const { repo, pr, scoredDoc, parsed, planOnly, post } = options;
   const selected = selectClusters(scoredDoc, {
     clusterIds: parseClusterIds(flagValues(parsed, "cluster")),
-    minQuorum: numberFlag(parsed, "min-quorum", 2),
+    minQuorum: optionalNumberFlag(parsed, "min-quorum"),
     maxClusters: optionalNumberFlag(parsed, "max-clusters"),
   });
   if (selected.length === 0) {
@@ -360,28 +360,26 @@ async function synthesizeCommand(parsed: ParsedArgs): Promise<void> {
     throw new Error("No bot findings found. Run the Quorum skill for clustering, or check QUORUM_BOTS.");
   }
 
-  // If user provided clusters.json, use it; otherwise generate all-singletons
+  // If user provided clusters.json, use it; otherwise the validator scores all-singletons.
   let clustersExists = false;
   try {
     await readFile(clustersPath);
     clustersExists = true;
   } catch { /* file doesn't exist */ }
 
-  if (!clustersExists) {
-    console.log("No clusters.json provided; generating all-singletons clustering.");
-    await generateSingletonClusters(findings, clustersPath);
+  const validateArgs = [join(repoScriptsDir(), "validate_partition.py"), findingsPath];
+  if (clustersExists) {
+    validateArgs.push(clustersPath);
+  } else {
+    console.log("No clusters.json provided; scoring all-singletons.");
+    validateArgs.push("--all-singletons");
   }
+  validateArgs.push("-o", scoredPath);
 
-  // Step 3: Validate & score
+  // Step 2: Validate & score
   console.log("Validating and scoring...");
   try {
-    await execFileAsync("python3", [
-      join(repoScriptsDir(), "validate_partition.py"),
-      findingsPath,
-      clustersPath,
-      "-o",
-      scoredPath,
-    ]);
+    await execFileAsync("python3", validateArgs);
   } catch (error) {
     const err = error as { stderr?: string; message?: string };
     console.error(err.stderr || err.message || String(error));
@@ -390,17 +388,17 @@ async function synthesizeCommand(parsed: ParsedArgs): Promise<void> {
 
   console.log(`wrote ${scoredPath}`);
 
-  // Step 4: Post (or dry-run)
+  // Step 3: Post (or dry-run) through the ledger, the only writer of the PR comment
   const dryRun = hasFlag(parsed, "dry-run");
   const noPost = hasFlag(parsed, "no-post");
   if (!noPost) {
-    const args = ["python3", join(repoScriptsDir(), "post_synthesis.py"), ref.repo, ref.pr, scoredPath];
+    const args = [join(repoScriptsDir(), "quorum_ledger.py"), "post-plan", ref.repo, ref.pr, scoredPath];
     if (dryRun) args.push("--dry-run");
     if (hasFlag(parsed, "minimize")) args.push("--minimize");
     if (hasFlag(parsed, "no-reactions")) args.push("--no-reactions");
 
     try {
-      const { stdout, stderr } = await execFileAsync("python3", args.slice(1));
+      const { stdout, stderr } = await execFileAsync("python3", args);
       if (dryRun) {
         console.log(stdout);
         if (stderr) console.error(stderr);
@@ -410,40 +408,9 @@ async function synthesizeCommand(parsed: ParsedArgs): Promise<void> {
     } catch (error) {
       const err = error as { stderr?: string; message?: string };
       console.error(err.stderr || err.message || String(error));
-      throw new Error("post_synthesis.py failed.");
+      throw new Error("quorum_ledger.py post-plan failed.");
     }
   }
-}
-
-async function generateSingletonClusters(findings: unknown[], outPath: string): Promise<void> {
-  const clusters = (findings as Array<Record<string, unknown>>).map((finding: Record<string, unknown>) => {
-    const lines = (finding.lines as [number | null, number | null]) ?? [null, null];
-    return {
-      cluster_id: `${finding.id}-solo`,
-      member_ids: [finding.id],
-      canonical_title: firstLine(String(finding.body ?? "No description")),
-      canonical_description: firstLine(String(finding.body ?? "No description"), 240),
-      category: "other",
-      severity: "minor",
-      primary_location: {
-        file: finding.file,
-        start_line: lines[0],
-        end_line: lines[1],
-      },
-      match_type: "singleton",
-      match_confidence: 1.0,
-      cross_file: false,
-    };
-  });
-  await writeJson(outPath, { clusters });
-}
-
-function firstLine(text: string, limit = 80): string {
-  for (const line of (text || "").trim().split("\n")) {
-    const cleaned = line.trim().replace(/^[#*>\-\s]+/, "").trim();
-    if (cleaned) return cleaned.slice(0, limit);
-  }
-  return "(no comment text)";
 }
 
 // ---- triage-pr command ----
@@ -749,7 +716,7 @@ function printHelp(): void {
   quorum run-dag --dag dag.json --out .quorum/runs/run-id --repo OWNER/REPO [options]
 
 Commands:
-  synthesize          Run Phase 1 synthesis pipeline (fetch, score, post) without AI clustering.
+  synthesize          Run Phase 1 synthesis pipeline (fetch, score, post plan); all-singletons when no clusters.json is given.
   triage-pr           Run synthesis + exploration end-to-end on a PR.
   plan-pr             Generate DAG/Canvas without calling cloud agents.
   run-pr              Run Cursor Cloud or Anthropic exploration (no PR comment by default).
@@ -761,7 +728,7 @@ Commands:
 Options:
   --provider cursor|anthropic  Backend for exploration agents. Default: cursor.
   --cluster ID[,ID]            Explore explicit cluster IDs instead of quorum filter.
-  --min-quorum N               Default: 2.
+  --min-quorum N               Quorum floor; default selects the agreed lane (quorum >= 2).
   --max-clusters N             Limit selected clusters.
   --scored PATH                Use a local clusters.scored.json.
   --out DIR                    Output directory.
