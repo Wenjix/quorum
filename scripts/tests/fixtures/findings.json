@@ -1,0 +1,62 @@
+[
+  {
+    "id": "bugbot-1",
+    "reviewer": "bugbot",
+    "login": "cursor[bot]",
+    "file": "src/a.ts",
+    "lines": [40, 40],
+    "body": "### Pipe write may drop bytes\n\n**Medium Severity**\n\n<!-- DESCRIPTION START -->\nThe writer ignores a partial write return value.\n<!-- DESCRIPTION END -->\n\n<!-- LOCATIONS START\nsrc/a.ts#L10-L12\nLOCATIONS END -->",
+    "url": "https://github.com/o/r/pull/7#discussion_r1001",
+    "comment_id": 1001,
+    "node_id": "PRRC_cursor_1",
+    "outdated": false,
+    "stated_severity": "major",
+    "pr": "o/r#7",
+    "head": "abc1234"
+  },
+  {
+    "id": "devin-1",
+    "reviewer": "devin",
+    "login": "devin-ai-integration[bot]",
+    "file": "src/b.ts",
+    "lines": [30, 31],
+    "body": "<!-- devin-review-comment {\"id\": \"BUG_x_0001\"} -->\n\n**Whole frames are dropped on a full pipe**\n\nThe writer discards the frame when the pipe is full.",
+    "url": "https://github.com/o/r/pull/7#discussion_r1002",
+    "comment_id": 1002,
+    "node_id": "PRRC_devin_1",
+    "outdated": false,
+    "stated_severity": "major",
+    "pr": "o/r#7",
+    "head": "abc1234"
+  },
+  {
+    "id": "devin-2",
+    "reviewer": "devin",
+    "login": "devin-ai-integration[bot]",
+    "file": "src/c.ts",
+    "lines": [5, 5],
+    "body": "Retry loop runs one extra attempt when max is 0.",
+    "url": "https://github.com/o/r/pull/7#discussion_r1003",
+    "comment_id": 1003,
+    "node_id": "PRRC_devin_2",
+    "outdated": false,
+    "stated_severity": null,
+    "pr": "o/r#7",
+    "head": "abc1234"
+  },
+  {
+    "id": "greptile-1",
+    "reviewer": "greptile",
+    "login": "greptile-apps[bot]",
+    "file": "src/d.ts",
+    "lines": [7, 9],
+    "body": "P2: variable name shadows the import.",
+    "url": "https://github.com/o/r/pull/7#discussion_r1004",
+    "comment_id": 1004,
+    "node_id": "PRRC_greptile_1",
+    "outdated": false,
+    "stated_severity": "minor",
+    "pr": "o/r#7",
+    "head": "abc1234"
+  }
+]

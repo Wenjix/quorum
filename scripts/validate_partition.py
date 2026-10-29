@@ -17,15 +17,24 @@
    (within-reviewer dups collapse without inflating consensus), sorts by
    (quorum desc, severity desc), and writes clusters.scored.json.
 
+4. Emits the `quorum/triage@1` document: a superset of the old
+   clusters.scored.json that adds the PR identity, per-reviewer counts, the
+   agreed/solo lanes (quorum >= 2 is "agreed"), and per cluster a lane,
+   P-tag, validation mode and the union of every member's locations.
+
 usage: validate_partition.py findings.json clusters.json [-o clusters.scored.json]
-       [--confidence-gate 0.7] [--no-gate]
+       [--confidence-gate 0.7] [--no-gate] [--priors priors.json]
+       validate_partition.py findings.json --all-singletons [-o ...]
+         (skips the clustering judge: one singleton cluster per finding)
 """
 
 import argparse
 import datetime
 import json
+import re
 import sys
 
+SCHEMA = "quorum/triage@1"
 SEVERITIES = {"critical": 3, "major": 2, "minor": 1, "nit": 0}
 CATEGORIES = {
     "logic", "concurrency", "security", "performance", "error-handling",
@@ -35,6 +44,15 @@ MATCH_TYPES = {
     "exact", "same-root-cause", "general-specific",
     "within-reviewer-dup", "singleton",
 }
+# Display shorthand for severity; the severity words stay on the cluster.
+P_TAG = {"critical": "P1", "major": "P1", "minor": "P2", "nit": "P3"}
+# lane -> validation mode: agreement directs how hard a cluster is validated.
+LANES = {"agreed": "escalate", "solo": "prove_or_kill"}
+MECHANISM_AGREEMENT = {"compatible", "split", "unknown"}
+
+# Bugbot embeds extra anchors as `path#L10-L12` / `path#L10` lines in this block.
+LOCATIONS_BLOCK_RE = re.compile(r"LOCATIONS START(.*?)LOCATIONS END", re.DOTALL)
+LOCATION_LINE_RE = re.compile(r"^(\S+?)#L(\d+)(?:-L(\d+))?$")
 
 
 def load(path, label):
@@ -56,6 +74,8 @@ def first_line(text, limit=80):
 
 def singleton_from(finding, parent_id=None, parent_severity=None):
     lines = finding.get("lines") or [None, None]
+    stated = finding.get("stated_severity")
+    stated_severity = stated if stated in SEVERITIES else None
     c = {
         "cluster_id": f"{finding['id']}-solo",
         "member_ids": [finding["id"]],
@@ -64,8 +84,9 @@ def singleton_from(finding, parent_id=None, parent_severity=None):
         "category": "other",
         # Preserve the parent cluster's severity when the confidence gate splits
         # it, so a low-confidence cluster does not silently downgrade a critical
-        # finding to "minor". Genuine standalone singletons fall back to "minor".
-        "severity": parent_severity or "minor",
+        # finding to "minor". Genuine standalone singletons take the reviewer's
+        # own stated severity and fall back to "minor" when it states none.
+        "severity": parent_severity or stated_severity or "minor",
         "primary_location": {
             "file": finding.get("file"),
             "start_line": lines[0],
@@ -78,6 +99,61 @@ def singleton_from(finding, parent_id=None, parent_severity=None):
     if parent_id:
         c["gate_split_from"] = parent_id
     return c
+
+
+def singletons_doc(findings):
+    """A clusters document with one singleton per finding — the fallback when
+    the clustering judge is skipped."""
+    return {"clusters": [singleton_from(f) for f in findings]}
+
+
+def lane_for(quorum):
+    return "agreed" if quorum >= 2 else "solo"
+
+
+def parse_extra_locations(body):
+    """Extra anchors a reviewer embedded in its comment body (Bugbot's
+    LOCATIONS START ... LOCATIONS END block), as [{file, lines: [a, b]}]."""
+    found = []
+    for block in LOCATIONS_BLOCK_RE.findall(body or ""):
+        for line in block.splitlines():
+            m = LOCATION_LINE_RE.match(line.strip())
+            if m:
+                start = int(m.group(2))
+                found.append({"file": m.group(1), "lines": [start, int(m.group(3) or start)]})
+    return found
+
+
+def union_locations(cluster, fmap):
+    """Every member's anchored location plus the extras parsed from its body,
+    deduped on (file, lines); the first member to name a location is its `from`."""
+    locations, seen = [], set()
+    for mid in cluster["member_ids"]:
+        finding = fmap[mid]
+        candidates = []
+        if finding.get("file"):
+            candidates.append({"file": finding["file"], "lines": list(finding.get("lines") or [None, None])})
+        candidates += parse_extra_locations(finding.get("body"))
+        for loc in candidates:
+            key = (loc["file"], tuple(loc["lines"]))
+            if key not in seen:
+                seen.add(key)
+                locations.append({**loc, "from": mid})
+    return locations
+
+
+def mechanisms_ok(claimed, member_ids):
+    """True when `claimed` has exactly one well-formed entry per member id."""
+    if not isinstance(claimed, list) or len(claimed) != len(member_ids):
+        return False
+    for entry in claimed:
+        if not isinstance(entry, dict):
+            return False
+        for field in ("reviewer", "member_id", "mechanism"):
+            value = entry.get(field)
+            if not isinstance(value, str) or not value.strip():
+                return False
+    return sorted(e["member_id"] for e in claimed) == sorted(member_ids)
 
 
 def validate(findings, doc):
@@ -117,6 +193,13 @@ def validate(findings, doc):
             errors.append(f"{cid}: match_confidence must be a number in [0,1], got {conf!r}")
         if len(mids) > 1 and not (c.get("match_rationale") or "").strip():
             errors.append(f"{cid}: match_rationale is required for clusters of size > 1")
+        if len(mids) > 1:
+            if not mechanisms_ok(c.get("mechanisms_claimed"), mids):
+                errors.append(f"{cid}: mechanisms_claimed must have one entry per member")
+            agreement = c.get("mechanism_agreement")
+            if agreement not in MECHANISM_AGREEMENT:
+                errors.append(
+                    f"{cid}: mechanism_agreement '{agreement}' not in {sorted(MECHANISM_AGREEMENT)}")
 
     omitted = [fid for fid in fmap if fid not in seen]
     for fid in omitted:
@@ -128,14 +211,29 @@ def validate(findings, doc):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("findings")
-    ap.add_argument("clusters")
+    ap.add_argument("clusters", nargs="?",
+                    help="clustering judge output; ignored (may be '-') with --all-singletons")
     ap.add_argument("-o", "--out", default="clusters.scored.json")
     ap.add_argument("--confidence-gate", type=float, default=0.7)
     ap.add_argument("--no-gate", action="store_true")
+    ap.add_argument("--all-singletons", action="store_true",
+                    help="skip the clustering judge: one singleton cluster per finding")
+    ap.add_argument("--priors", help="JSON file of per-reviewer priors to embed")
     args = ap.parse_args()
+    if not args.all_singletons and not args.clusters:
+        ap.error("the clusters argument is required unless --all-singletons is given")
 
     findings = load(args.findings, "findings")
-    doc = load(args.clusters, "clusters")
+    doc = singletons_doc(findings) if args.all_singletons else load(args.clusters, "clusters")
+    priors = {}
+    if args.priors:
+        priors = load(args.priors, "priors")
+        # Accept the priors tool's output ({"reviewers": {...}, ...}) or a bare map.
+        if isinstance(priors, dict) and "reviewers" in priors:
+            priors = priors["reviewers"]
+        if not isinstance(priors, dict):
+            print(f"error: priors in {args.priors} must be a JSON object", file=sys.stderr)
+            sys.exit(1)
     fmap = {f["id"]: f for f in findings}
 
     errors, clusters = validate(findings, doc)
@@ -166,6 +264,15 @@ def main():
         reviewers = sorted({fmap[m]["reviewer"] for m in c["member_ids"]})
         c["quorum"] = len(reviewers)
         c["reviewers"] = reviewers
+        c["lane"] = lane_for(c["quorum"])
+        c["p_tag"] = P_TAG[c["severity"]]
+        c["validation"] = {"mode": LANES[c["lane"]]}
+        cheapest_check = c.pop("cheapest_check", None)
+        if cheapest_check:
+            c["validation"]["cheapest_check"] = cheapest_check
+        c["locations"] = union_locations(c, fmap)
+        c.setdefault("mechanisms_claimed", [])
+        c["disposition_history"] = []
         c["members"] = [
             {k: fmap[m].get(k) for k in
              ("id", "reviewer", "file", "lines", "url", "comment_id", "node_id", "outdated")}
@@ -179,7 +286,14 @@ def main():
         (c.get("primary_location") or {}).get("file") or "",
     ))
 
+    reviewer_counts = {}
+    for f in findings:
+        reviewer_counts[f["reviewer"]] = reviewer_counts.get(f["reviewer"], 0) + 1
+
     result = {
+        "schema": SCHEMA,
+        "pr": findings[0].get("pr") if findings else None,
+        "head": findings[0].get("head") if findings else None,
         "generated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),
         "totals": {
             "findings": len(findings),
@@ -187,7 +301,16 @@ def main():
             "reviewer_denominator": denominator,
             "gate_split": gated,
         },
+        "reviewers": dict(sorted(reviewer_counts.items())),
+        "priors": priors,
+        "lanes": {
+            lane: [c["cluster_id"] for c in out_clusters if c["lane"] == lane]
+            for lane in LANES
+        },
         "clusters": out_clusters,
+        "deferred": [],
+        "timeline": {},
+        "orphaned_dispositions": [],
     }
     with open(args.out, "w") as f:
         json.dump(result, f, indent=2)

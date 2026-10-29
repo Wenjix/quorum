@@ -42,6 +42,8 @@ Write strict JSON to `clusters.json`. Hard constraints:
 - `match_type`: `exact | same-root-cause | general-specific | within-reviewer-dup | singleton`
 - `match_confidence`: 0.0–1.0; use 1.0 for singletons. Multi-finding clusters below 0.7 will be split back into singletons by the validator — that gate is intentional, do not inflate confidence to dodge it.
 - `match_rationale`: one sentence, required for clusters of size > 1.
+- `mechanisms_claimed`: one entry per member, `{reviewer, member_id, mechanism}`, where `mechanism` is one sentence restating what that reviewer says causes the symptom, in the reviewer's own terms. Required for clusters of size > 1; leave it out (or `[]`) on singletons.
+- `mechanism_agreement`: `compatible | split | unknown`, required for clusters of size > 1. `compatible` means the members describe the same mechanism, `split` means they name different mechanisms for the same symptom, `unknown` means the comments are too vague to tell. This is matching, not re-reviewing: you compare what the reviewers *said*, you never decide which one is right.
 
 ```json
 {
@@ -57,7 +59,12 @@ Write strict JSON to `clusters.json`. Hard constraints:
       "match_type": "same-root-cause",
       "match_confidence": 0.9,
       "match_rationale": "one sentence; required for size > 1",
-      "cross_file": false
+      "cross_file": false,
+      "mechanisms_claimed": [
+        {"reviewer": "bugbot", "member_id": "bugbot-3", "mechanism": "one sentence; required for size > 1"},
+        {"reviewer": "devin", "member_id": "devin-1", "mechanism": "one sentence; required for size > 1"}
+      ],
+      "mechanism_agreement": "compatible"
     }
   ]
 }
@@ -87,5 +94,12 @@ Write strict JSON to `clusters.json`. Hard constraints:
 - `bugbot-7` @ `services/sync.ts:103` — "await push() can reject and is unhandled."
 
 → The specific is an instance of the general. **MERGE**, `match_type: "general-specific"`; the description covers the broad gap and cites line 103 as a concrete instance.
+
+**D — same symptom, different mechanism (merge, flag the split):**
+
+- `bugbot-4` @ `ipc/writer.ts:40` — "Pipe write returns a partial count and the loop ignores it, so the tail of every large frame is lost."
+- `devin-3` @ `ipc/writer.ts:58` — "When the pipe is full the whole frame is dropped instead of queued."
+
+→ Both describe data going missing on the same pipe write, and one change to the writer resolves both. **MERGE**, `match_type: "same-root-cause"`. The two reviewers disagree on the mechanism (partial writes versus whole-frame drops), so set `mechanism_agreement: "split"` and record each claim in `mechanisms_claimed`. You are not picking the right mechanism or re-reviewing the code; you are matching the findings and reporting that the reviewers disagree, so the later validation step establishes the true mechanism before anyone fixes anything.
 
 <!-- Add new worked examples here from dogfood logs: every bad merge you catch in the wild is the next example. -->
