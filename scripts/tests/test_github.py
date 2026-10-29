@@ -14,7 +14,8 @@ from unittest import mock
 from fakes import FakeClient
 from quorum_github import (
     GhClient, TokenClient, add_eyes, compare_files, default_client,
-    find_marker_comment, get_pr_head, minimize, reply_in_thread, upsert_comment,
+    find_marker_comment, get_authenticated_login, get_pr_head, minimize,
+    reply_in_thread, upsert_comment,
 )
 
 MARKER = "<!-- quorum:triage -->"
@@ -81,12 +82,15 @@ class TransportFunctionsTest(unittest.TestCase):
         self.assertEqual(c.calls[0][:2], ("GET", "repos/o/r/pulls/7"))
 
     def test_find_marker_comment_returns_newest_match(self):
-        c = FakeClient({("GET", "repos/o/r/issues/7/comments"): [
-            {"id": 4, "body": f"{MARKER}\nolder"},
-            {"id": 9, "body": "unrelated"},
-            {"id": 6, "body": f"{MARKER}\nnewer"},
-            {"id": 2, "body": None},
-        ]})
+        c = FakeClient({
+            ("GET", "user"): {"login": "quorum-bot"},
+            ("GET", "repos/o/r/issues/7/comments"): [
+                {"id": 4, "body": f"{MARKER}\nolder", "user": {"login": "quorum-bot"}},
+                {"id": 9, "body": "unrelated"},
+                {"id": 6, "body": f"{MARKER}\nnewer", "user": {"login": "quorum-bot"}},
+                {"id": 2, "body": None},
+            ],
+        })
         found = find_marker_comment(c, "o/r", 7, MARKER)
         self.assertEqual(found, {"id": 6, "body": f"{MARKER}\nnewer"})
         # Pagination is requested from the client, not hand-rolled here.
@@ -96,6 +100,17 @@ class TransportFunctionsTest(unittest.TestCase):
         c = FakeClient({("GET", "repos/o/r/issues/7/comments"): [{"id": 1, "body": "hi"}]})
         self.assertIsNone(find_marker_comment(c, "o/r", 7, MARKER))
         self.assertIsNone(find_marker_comment(FakeClient(), "o/r", 7, MARKER))
+
+    def test_get_authenticated_login_reads_the_user_endpoint(self):
+        c = FakeClient({("GET", "user"): {"login": "quorum-bot"}})
+        self.assertEqual(get_authenticated_login(c), "quorum-bot")
+        self.assertEqual(c.calls[0][:2], ("GET", "user"))
+
+    def test_get_authenticated_login_none_on_failure_or_missing_login(self):
+        failing = FakeClient({("GET", "user"): RuntimeError("403")})
+        self.assertIsNone(get_authenticated_login(failing))
+        self.assertIsNone(get_authenticated_login(FakeClient({("GET", "user"): {}})))
+        self.assertIsNone(get_authenticated_login(FakeClient()))
 
     def test_upsert_patches_when_existing(self):
         c = FakeClient()
@@ -151,6 +166,109 @@ class TransportFunctionsTest(unittest.TestCase):
     def test_reply_in_thread_false_on_error(self):
         c = FakeClient({("POST", "repos/o/r/pulls/7/comments/99/replies"): RuntimeError("422")})
         self.assertFalse(reply_in_thread(c, "o/r", 7, 99, "thanks"))
+
+
+def marker_comment(cid, login, association="NONE", user_type="User"):
+    """An issue comment carrying MARKER, authored by `login`."""
+    return {
+        "id": cid,
+        "body": f"{MARKER}\ncomment {cid}",
+        "user": {"login": login, "type": user_type},
+        "author_association": association,
+    }
+
+
+class FindMarkerCommentTrustTest(unittest.TestCase):
+    """The ledger comment is only trusted when the authenticated account or a
+    repository insider wrote it; anyone can comment on a public pull request."""
+
+    COMMENTS = ("GET", "repos/o/r/issues/7/comments")
+
+    def client(self, comments, me=None):
+        responses = {self.COMMENTS: comments}
+        responses[("GET", "user")] = {"login": "quorum-bot"} if me is None else me
+        return FakeClient(responses)
+
+    def test_forged_marker_comment_from_outsider_is_ignored(self):
+        c = self.client([marker_comment(5, "quorum-bot"), marker_comment(9, "mallory")])
+        found = find_marker_comment(c, "o/r", 7, MARKER)
+        self.assertEqual(found["id"], 5)
+
+    def test_authenticated_login_is_trusted_without_association(self):
+        c = self.client([marker_comment(7, "quorum-bot", association="NONE")])
+        self.assertEqual(find_marker_comment(c, "o/r", 7, MARKER)["id"], 7)
+
+    def test_collaborator_with_other_login_is_trusted(self):
+        c = self.client([marker_comment(8, "wenjix", association="COLLABORATOR")])
+        self.assertEqual(find_marker_comment(c, "o/r", 7, MARKER)["id"], 8)
+
+    def test_every_insider_association_is_trusted(self):
+        for association in ("OWNER", "MEMBER", "COLLABORATOR"):
+            with self.subTest(association=association):
+                c = self.client([marker_comment(3, "someone", association=association)])
+                self.assertEqual(find_marker_comment(c, "o/r", 7, MARKER)["id"], 3)
+
+    def test_outsider_associations_are_not_trusted(self):
+        for association in ("NONE", "CONTRIBUTOR", "FIRST_TIMER", "FIRST_TIME_CONTRIBUTOR",
+                            "MANNEQUIN"):
+            with self.subTest(association=association):
+                c = self.client([marker_comment(3, "someone", association=association)])
+                self.assertIsNone(find_marker_comment(c, "o/r", 7, MARKER))
+
+    def test_association_is_compared_case_sensitively(self):
+        c = self.client([marker_comment(3, "someone", association="owner")])
+        self.assertIsNone(find_marker_comment(c, "o/r", 7, MARKER))
+
+    def test_get_user_failure_falls_back_to_association(self):
+        c = FakeClient({
+            self.COMMENTS: [marker_comment(8, "wenjix", association="OWNER"),
+                            marker_comment(9, "mallory")],
+            ("GET", "user"): RuntimeError("403 Resource not accessible"),
+        })
+        self.assertEqual(find_marker_comment(c, "o/r", 7, MARKER)["id"], 8)
+
+    def test_unknown_login_never_trusts_a_comment_without_a_login(self):
+        # No `user` or no `login` on the comment must not equal an unknown (None) login.
+        c = FakeClient({
+            self.COMMENTS: [
+                {"id": 4, "body": MARKER, "author_association": "NONE"},
+                {"id": 5, "body": MARKER, "user": None, "author_association": "NONE"},
+                {"id": 6, "body": MARKER, "user": {}, "author_association": "NONE"},
+            ],
+            ("GET", "user"): RuntimeError("403"),
+        })
+        self.assertIsNone(find_marker_comment(c, "o/r", 7, MARKER))
+
+    def test_comment_without_a_login_is_untrusted_even_when_login_is_known(self):
+        c = self.client([
+            {"id": 4, "body": MARKER, "author_association": "NONE"},
+            {"id": 5, "body": MARKER, "user": {}, "author_association": "NONE"},
+        ])
+        self.assertIsNone(find_marker_comment(c, "o/r", 7, MARKER))
+
+    def test_comment_without_a_login_is_trusted_by_association(self):
+        c = self.client([{"id": 4, "body": MARKER, "author_association": "MEMBER"}])
+        self.assertEqual(find_marker_comment(c, "o/r", 7, MARKER)["id"], 4)
+
+    def test_only_untrusted_hits_returns_none(self):
+        c = self.client([marker_comment(5, "mallory"), marker_comment(9, "eve")])
+        self.assertIsNone(find_marker_comment(c, "o/r", 7, MARKER))
+
+    def test_returned_shape_is_id_and_body(self):
+        comment = marker_comment(5, "quorum-bot")
+        found = find_marker_comment(self.client([comment]), "o/r", 7, MARKER)
+        self.assertEqual(found, {"id": 5, "body": comment["body"]})
+
+    def test_get_user_called_once_per_lookup(self):
+        c = self.client([marker_comment(1, "quorum-bot"), marker_comment(2, "mallory"),
+                         marker_comment(3, "eve"), marker_comment(4, "quorum-bot")])
+        self.assertEqual(find_marker_comment(c, "o/r", 7, MARKER)["id"], 4)
+        self.assertEqual([call[1] for call in c.calls].count("user"), 1)
+
+    def test_get_user_not_called_when_nothing_carries_the_marker(self):
+        c = self.client([{"id": 1, "body": "hi", "user": {"login": "quorum-bot"}}])
+        self.assertIsNone(find_marker_comment(c, "o/r", 7, MARKER))
+        self.assertNotIn("user", [call[1] for call in c.calls])
 
 
 class DefaultClientTest(unittest.TestCase):

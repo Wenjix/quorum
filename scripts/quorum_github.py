@@ -26,6 +26,9 @@ from typing import Any, Protocol
 API_ROOT = "https://api.github.com/"
 PAGE_SIZE = 100
 
+# GitHub's `author_association` values that vouch for a comment's author.
+TRUSTED_ASSOCIATIONS = {"OWNER", "MEMBER", "COLLABORATOR"}
+
 MINIMIZE_MUTATION = (
     "mutation($id: ID!) { minimizeComment(input: {subjectId: $id, "
     "classifier: DUPLICATE}) { minimizedComment { isMinimized } } }"
@@ -165,14 +168,47 @@ def get_pr_head(client, repo, pr):
     return client.api("GET", f"repos/{repo}/pulls/{pr}")["head"]["sha"]
 
 
+def get_authenticated_login(client):
+    """Login of the account the client authenticates as, or None when unknown.
+
+    Best-effort: `GET user` is refused for some tokens (for example a GitHub
+    App installation token), and that must not stop the lookup that needs it.
+    """
+    try:
+        login = client.api("GET", "user")["login"]
+    except Exception:
+        return None
+    return login if isinstance(login, str) and login else None
+
+
+def _is_trusted(comment, login):
+    """Written by the authenticated account `login`, or by a repository insider."""
+    if comment.get("author_association") in TRUSTED_ASSOCIATIONS:
+        return True
+    author = (comment.get("user") or {}).get("login")
+    return login is not None and author == login
+
+
 def find_marker_comment(client, repo, pr, marker):
-    """The newest issue comment whose body contains `marker`, as {id, body}."""
+    """The newest trusted issue comment whose body contains `marker`, as {id, body}.
+
+    Anyone can comment on a public pull request, so a marker alone proves
+    nothing: an outsider could post a forged ledger carrying fabricated
+    dispositions, which the next run would inherit and then overwrite. A
+    comment is trusted only when it was written by the account this client
+    authenticates as (`GET user`, best-effort, asked at most once per lookup),
+    or when GitHub reports its author as an OWNER, MEMBER or COLLABORATOR of
+    the repository (`author_association`, compared exactly). Every other
+    marker comment is ignored.
+    """
     comments = client.api("GET", f"repos/{repo}/issues/{pr}/comments",
                           params={"paginate": True}) or []
     hits = [c for c in comments if marker in (c.get("body") or "")]
-    if not hits:
+    login = get_authenticated_login(client) if hits else None
+    trusted = [c for c in hits if _is_trusted(c, login)]
+    if not trusted:
         return None
-    newest = max(hits, key=lambda c: c["id"])
+    newest = max(trusted, key=lambda c: c["id"])
     return {"id": newest["id"], "body": newest["body"]}
 
 
