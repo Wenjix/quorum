@@ -166,8 +166,8 @@ def cmd_post_plan(args, client):
     comment_id, prior = find_ledger(client, args.repo, args.pr, tolerate=args.dry_run)
     if prior:
         if prior.get("truncated"):
-            print("warning: the posted ledger is truncated; dispositions carry only "
-                  "where its clusters still name their members", file=sys.stderr)
+            print("warning: the posted ledger is truncated and names no member comment ids, "
+                  "so its dispositions cannot carry to this plan", file=sys.stderr)
         doc = inherit(doc, prior, changed_files(client, args.repo, prior.get("head"), doc.get("head")))
         without_null_escalations(doc)
     doc["timeline"] = dict(doc.get("timeline") or {})

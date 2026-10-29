@@ -145,6 +145,17 @@ class PostPlanTest(unittest.TestCase):
                 got = {c["cluster_id"] for c in doc["clusters"] if c["disposition"].get("stale")}
                 self.assertEqual(got, stale)
 
+    def test_post_plan_over_a_truncated_ledger_warns_and_keeps_plan_at(self):
+        ledger = load("triage.ledger.json")
+        body = "\n".join(render_brief(ledger) + render_agent_layer(load_protocol(LEDGER_REF), minimal_doc(ledger)))
+        client = fake(posted(body))
+        code, _, err = run(["post-plan", "o/r", "7", PLAN, "--no-reactions"], client)
+        self.assertEqual(code, 0, err)
+        self.assertIn("warning: the posted ledger is truncated", err)
+        doc = written_doc(client)
+        self.assertEqual(doc["timeline"]["plan_at"], ledger["timeline"]["plan_at"])
+        self.assertNotIn("truncated", doc)
+
     def test_post_plan_over_legacy_comment_upgrades_in_place(self):
         legacy = load("triage.json")
         for key in ("schema", "lanes", "deferred", "timeline", "orphaned_dispositions", "priors"):
@@ -306,6 +317,16 @@ class DisposeTest(unittest.TestCase):
         self.assertNotIn("escalation", c4)  # the minimal doc's null escalation counts as absent
         self.assertEqual(c3["disposition"]["verdict"], "invalid")
         self.assertEqual(c3["disposition_history"][-1]["verdict"], "deferred")
+
+    def test_dispose_dry_run_prints_the_body_and_planned_replies(self):
+        client = self.plan_client()
+        code, out, err = run(["dispose", "o/r", "7", "c2", "--verdict", "invalid", "--note", "cannot reproduce",
+                              "--reply", "--dry-run"], client)
+        self.assertEqual(code, 0, err)
+        self.assertEqual(writes(client), [])
+        self.assertEqual(cluster(extract_doc(out), "c2")["disposition"]["verdict"], "invalid")
+        self.assertIn(f"update comment {COMMENT_ID}", err)
+        self.assertIn("replies 1: 1003", err)
 
     def test_dispose_without_a_ledger_comment(self):
         client = fake()
