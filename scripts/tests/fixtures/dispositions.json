@@ -1,0 +1,19 @@
+{
+  "dispositions": [
+    {
+      "QUORUM_DISPOSITION": true,
+      "cluster_id": "c2",
+      "verdict": "valid",
+      "note": "off by one confirmed",
+      "evidence": ["src/c.ts:L5 retry(0) makes two attempts"],
+      "members": {"devin-2": "valid"}
+    },
+    {
+      "QUORUM_DISPOSITION": true,
+      "cluster_id": "c3",
+      "verdict": "invalid",
+      "note": "the shadowed name is never read",
+      "evidence": ["src/d.ts:L7-L9 the outer binding is unused"]
+    }
+  ]
+}

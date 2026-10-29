@@ -19,8 +19,8 @@ import re
 
 from quorum_doc import MARKER
 from quorum_gate import (
-    OPEN_VERDICTS, compute_deferred, compute_gate, compute_timeline, live_disposition,
-    triage_started,
+    OPEN_VERDICTS, compute_deferred, compute_gate, compute_timeline, effective_severity,
+    live_disposition, triage_started,
 )
 from validate_partition import P_TAG, SCHEMA, SEVERITIES, lane_for
 
@@ -135,6 +135,10 @@ def title_of(cluster):
 
 
 def p_tag_of(cluster):
+    """The P-tag of the effective severity: a severity the owner recorded on the
+    disposition replaces the cluster's own tag."""
+    if (cluster.get("disposition") or {}).get("severity"):
+        return plain(P_TAG.get(effective_severity(cluster)) or "—")
     return plain(cluster.get("p_tag") or P_TAG.get(cluster.get("severity")) or "—")
 
 
@@ -170,10 +174,10 @@ def reviewer_names(doc):
 
 
 def lane_clusters(doc, lane):
-    """The clusters in `lane`, by severity (worst first), then file. sorted() is
-    stable, so ties keep document order."""
+    """The clusters in `lane`, by effective severity (worst first), then file.
+    sorted() is stable, so ties keep document order."""
     in_lane = [c for c in doc["clusters"] if lane_of(c) == lane]
-    return sorted(in_lane, key=lambda c: (-SEVERITIES.get(c.get("severity"), -1),
+    return sorted(in_lane, key=lambda c: (-SEVERITIES.get(effective_severity(c), -1),
                                           (c.get("primary_location") or {}).get("file") or ""))
 
 

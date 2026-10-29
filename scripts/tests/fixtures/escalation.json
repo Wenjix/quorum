@@ -1,0 +1,12 @@
+{
+  "QUORUM_ESCALATION": true,
+  "invariant": "Every write to the pipe must report how many bytes it accepted, and the caller must resume from that offset.",
+  "siblings": [
+    {"file": "src/b.ts", "lines": [30, 31], "risk": "likely", "rationale": "Same frame writer, drops the frame on EAGAIN."}
+  ],
+  "chokepoint": "src/pipe.ts writeAll(): the one function every writer calls.",
+  "test": "writeAll resumes after a short write and reports the final byte count.",
+  "evidence": [
+    {"file": "src/a.ts", "lines": [40, 40], "note": "the return value of write() is ignored"}
+  ]
+}

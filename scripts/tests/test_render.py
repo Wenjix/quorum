@@ -89,6 +89,15 @@ class RenderCommentTest(unittest.TestCase):
         self.assertEqual(body.count(placeholder), 1)
         self.assertLess(body.index(placeholder), body.index("### Solo"))
 
+    def test_disposition_severity_sets_the_p_tag_and_order(self):
+        doc = load("triage.json")
+        cluster(doc, "c3")["disposition"] = {"verdict": "valid", "note": "worse than it looks",
+                                             "evidence": ["e"], "severity": "critical"}
+        body = render_comment(doc, PROTOCOL)
+        self.assertIn("- **P1** ", body.split("`src/d.ts:L7-L9`")[0].rsplit("\n", 1)[-1])
+        # c3 is now the worst solo cluster, so it leads its lane.
+        self.assertLess(body.index("`src/d.ts:L7-L9`"), body.index("`src/c.ts:L5`"))
+
     def test_ledger_state_lines(self):
         doc = load("triage.ledger.json")
         body = render_comment(doc, PROTOCOL)

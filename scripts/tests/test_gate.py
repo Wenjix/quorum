@@ -11,7 +11,7 @@ from quorum_doc import (
 )
 from quorum_gate import (
     GATE_RELEVANT, blocks, compute_deferred, compute_gate, compute_timeline,
-    is_disposed, triage_started,
+    effective_severity, is_disposed, triage_started,
 )
 
 FIXTURES = pathlib.Path(__file__).resolve().parent / "fixtures"
@@ -129,6 +129,15 @@ class GateTest(unittest.TestCase):
         doc = with_disposition(doc, "c2", verdict="invalid", note="no")
         self.assertEqual(compute_gate(doc)["state"], "clear")
         self.assertEqual(compute_deferred(doc), ["c1"])
+
+    def test_disposition_severity_overrides_the_cluster_severity(self):
+        doc = with_disposition(load("triage.json"), "c3", verdict="valid", note="n")
+        doc = with_disposition(doc, "c2", verdict="valid", note="n", commit="x")
+        doc["clusters"][3]["disposition"]["severity"] = "critical"  # c3, minor on the cluster
+        doc["clusters"][2]["disposition"]["severity"] = "minor"     # c2, major on the cluster
+        self.assertEqual([effective_severity(c) for c in doc["clusters"]], ["major", "minor", "minor", "critical"])
+        g = compute_gate(doc)
+        self.assertEqual((g["blocking"], g["was_blocked_by"]), (["c1", "c3"], 1))
 
     def test_stale_disposition_counts_as_undisposed(self):
         doc = with_disposition(load("triage.json"), "c2", verdict="valid", note="n", commit="x", stale=True)
