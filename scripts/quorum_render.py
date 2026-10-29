@@ -135,11 +135,12 @@ def title_of(cluster):
 
 
 def p_tag_of(cluster):
-    """The P-tag of the effective severity: a severity the owner recorded on the
-    disposition replaces the cluster's own tag."""
-    if (cluster.get("disposition") or {}).get("severity"):
-        return plain(P_TAG.get(effective_severity(cluster)) or "—")
-    return plain(cluster.get("p_tag") or P_TAG.get(cluster.get("severity")) or "—")
+    """The P-tag of the effective severity: a severity the owner recorded on a
+    live disposition replaces the cluster's own tag."""
+    severity = effective_severity(cluster)
+    if severity != cluster.get("severity"):
+        return plain(P_TAG.get(severity) or "—")
+    return plain(cluster.get("p_tag") or P_TAG.get(severity) or "—")
 
 
 def cluster_location(cluster):
@@ -442,8 +443,10 @@ def minimal_escalation(escalation):
 
 
 def minimal_doc(doc):
-    """What the Node CLI needs, the timeline, and per cluster its escalation
-    (reduced) and disposition (text cut to NOTE_LIMIT); marked `truncated`."""
+    """What the Node CLI needs, the timeline, and per cluster its members
+    reduced to {id, comment_id} (so a re-run can still match dispositions by
+    comment id), its escalation (reduced) and its disposition (text cut to
+    NOTE_LIMIT); marked `truncated`."""
     return {
         "schema": doc.get("schema"),
         "pr": doc.get("pr"),
@@ -457,6 +460,8 @@ def minimal_doc(doc):
             {
                 "cluster_id": c.get("cluster_id"),
                 "member_ids": list(c.get("member_ids") or []),
+                "members": [{"id": m.get("id"), "comment_id": m.get("comment_id")}
+                            for m in c.get("members") or []],
                 "quorum": c.get("quorum"),
                 "reviewers": list(c.get("reviewers") or []),
                 "lane": lane_of(c),

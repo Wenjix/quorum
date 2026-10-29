@@ -25,7 +25,6 @@ stdout and the planned side effects to stderr, and writes nothing.
 from __future__ import annotations
 
 import argparse
-import copy
 import json
 import re
 import sys
@@ -44,6 +43,9 @@ TEXT_LIMIT = 2000         # each note, tests note and evidence item
 COMMIT_RE = re.compile(r"^[0-9a-f]{7,40}$")
 COMPARE_FILE_CAP = 300    # GitHub's compare lists at most 300 files: a full list is unknown
 REFRESH_KEYS = ("commit", "tests")
+DISPOSITION_FLAGS = ("verdict", "note", "evidence", "member", "severity", "commit", "tests")
+ESCALATION_TEXT = ("invariant", "chokepoint", "test")
+DEFAULT_BY = "agent"
 
 
 class LedgerError(Exception):
@@ -94,18 +96,6 @@ def without_null_escalations(doc):
     return doc
 
 
-def with_members(truncated, scored):
-    """`truncated` with each cluster's members restored from the `scored` cluster
-    of the same id and finding ids, so `inherit` can match on comment ids."""
-    out = copy.deepcopy(truncated)
-    full = {c["cluster_id"]: c for c in scored["clusters"]}
-    for c in out["clusters"]:
-        source = full.get(c.get("cluster_id"))
-        if source and source.get("member_ids") == c.get("member_ids"):
-            c["members"] = copy.deepcopy(source.get("members") or [])
-    return out
-
-
 def posted_ledger(client, args):
     """(comment id, full doc, posted doc) for dispose and escalate."""
     comment_id, posted = find_ledger(client, args.repo, args.pr)
@@ -118,7 +108,7 @@ def posted_ledger(client, args):
                           "(the local clusters.scored.json) to rebuild it")
     scored = upgrade_legacy(load_json(args.scored))
     files = changed_files(client, args.repo, posted.get("head"), scored.get("head"))
-    doc = inherit(scored, with_members(posted, scored), files)
+    doc = inherit(scored, posted, files)
     return comment_id, without_null_escalations(doc), posted
 
 
@@ -165,11 +155,13 @@ def cmd_post_plan(args, client):
     doc = upgrade_legacy(load_json(args.scored))
     comment_id, prior = find_ledger(client, args.repo, args.pr, tolerate=args.dry_run)
     if prior:
-        if prior.get("truncated"):
-            print("warning: the posted ledger is truncated and names no member comment ids, "
-                  "so its dispositions cannot carry to this plan", file=sys.stderr)
         doc = inherit(doc, prior, changed_files(client, args.repo, prior.get("head"), doc.get("head")))
         without_null_escalations(doc)
+        recorded = sum(1 for c in prior.get("clusters") or [] if latest_disposition(c))
+        if recorded and not doc.get("orphaned_dispositions") and not any(
+                latest_disposition(c) for c in doc["clusters"]):
+            print(f"warning: none of the {recorded} dispositions in the posted ledger carried to "
+                  "this plan or was kept as an orphan", file=sys.stderr)
     doc["timeline"] = dict(doc.get("timeline") or {})
     doc["timeline"]["plan_at"] = doc["timeline"].get("plan_at") or now_iso()
     body = finalize(doc, prior)
@@ -245,11 +237,11 @@ def build_disposition(entry, cluster, by, at):
         if not prior or not refresh or extra or evidence or members:
             raise LedgerError(f"{cluster['cluster_id']}: --verdict is required unless the call only adds "
                               "--commit and/or --tests to an existing disposition")
-        kept = {k: v for k, v in prior.items() if k not in ("by", "at", "stale")}
-        return {**kept, **refresh, "by": by, "at": at}
+        kept = {k: v for k, v in prior.items() if k not in ("at", "stale")}
+        return {**kept, **refresh, "by": by or prior.get("by") or DEFAULT_BY, "at": at}
     if not entry.get("note"):
         raise LedgerError(f"{cluster['cluster_id']}: a new verdict needs --note")
-    out = {"verdict": verdict, "note": entry["note"], "evidence": list(evidence), "by": by, "at": at}
+    out = {"verdict": verdict, "note": entry["note"], "evidence": list(evidence), "by": by or DEFAULT_BY, "at": at}
     for key, value in (("members", members), ("severity", severity), ("commit", entry.get("commit")),
                        ("tests", entry.get("tests")),
                        ("mechanism_correction", entry.get("mechanism_correction"))):
@@ -283,6 +275,9 @@ def reply_effects(client, args, changed):
 def dispose_entries(args):
     """The dispositions this call records, as dicts with flag-named keys."""
     if args.from_file:
+        mixed = [f"--{flag}" for flag in DISPOSITION_FLAGS if getattr(args, flag) is not None]
+        if mixed:
+            raise LedgerError(f"--from FILE cannot be combined with {', '.join(mixed)}")
         data = load_json(args.from_file)
         entries = data.get("dispositions") if isinstance(data, dict) and "dispositions" in data else [data]
         if not isinstance(entries, list) or not all(isinstance(e, dict) for e in entries):
@@ -299,12 +294,12 @@ def dispose_entries(args):
 def cmd_dispose(args, client):
     entries = dispose_entries(args)
     comment_id, doc, posted = posted_ledger(client, args)
-    at, changed = now_iso(), []
+    at, changed = now_iso(), {}
     for entry in entries:
         cluster = cluster_by_id(doc, entry.get("cluster_id"))
-        disposition = build_disposition(entry, cluster, args.by, at)
-        record(cluster, disposition)
-        changed.append(cluster)
+        record(cluster, build_disposition(entry, cluster, args.by, at))
+        changed[cluster["cluster_id"]] = cluster  # listed twice: one reply, the last entry wins
+    changed = list(changed.values())
     for cluster in changed:
         d = cluster["disposition"]
         if d["verdict"] in ("valid", "partly") and not d.get("evidence"):
@@ -320,15 +315,18 @@ def cmd_escalate(args, client):
     escalation.pop("QUORUM_ESCALATION", None)
     if not escalation.get("invariant"):
         raise LedgerError(f"{args.from_file}: an escalation needs an invariant")
+    for key in ESCALATION_TEXT:
+        check_text(f"the escalation's {key}", escalation.get(key))
     comment_id, doc, posted = posted_ledger(client, args)
     cluster = cluster_by_id(doc, args.cluster_id)
-    if cluster.get("lane") == "solo":
-        raise LedgerError(f"{args.cluster_id} is a solo cluster: prove or kill it with dispose")
-    at = now_iso()
+    if cluster.get("lane") != "agreed":
+        raise LedgerError(f"{args.cluster_id} is in the {cluster.get('lane')!r} lane; escalate takes agreed "
+                          "clusters only (prove or kill a solo cluster with dispose)")
+    at, by = now_iso(), args.by or DEFAULT_BY
     entry = {"verdict": escalation.get("verdict") or "valid", "note": escalation.get("invariant")}
-    disposition = build_disposition(entry, cluster, args.by, at)
+    disposition = build_disposition(entry, cluster, by, at)
     disposition["evidence"] = escalation.get("evidence") or []
-    cluster["escalation"] = {**escalation, "by": args.by, "at": at}
+    cluster["escalation"] = {**escalation, "by": by, "at": at}
     record(cluster, disposition)
     return write(client, args, finalize(doc, posted), comment_id, {})
 
@@ -377,7 +375,8 @@ def parser():
     escalate.add_argument("--from", dest="from_file", metavar="FILE", required=True)
 
     for p in (dispose, escalate):
-        p.add_argument("--by", default="agent")
+        p.add_argument("--by", help=f"who recorded it (default {DEFAULT_BY!r}; a --commit/--tests "
+                                     "refresh keeps the prior author)")
         p.add_argument("--scored", metavar="PATH",
                        help="the local clusters.scored.json, needed when the posted ledger is truncated")
         p.add_argument("--dry-run", action="store_true")
@@ -390,7 +389,10 @@ COMMANDS = {"post-plan": cmd_post_plan, "dispose": cmd_dispose, "escalate": cmd_
 
 
 def main(argv: list[str] | None = None, client: gh.Client | None = None) -> int:
-    args = parser().parse_args(argv)
+    try:
+        args = parser().parse_args(argv)
+    except SystemExit as e:  # argparse has printed the usage error (2) or the help (0)
+        return e.code if isinstance(e.code, int) else 2
     try:
         if client is None:
             try:
@@ -402,7 +404,7 @@ def main(argv: list[str] | None = None, client: gh.Client | None = None) -> int:
     except LedgerError as e:
         print(f"error: {e}", file=sys.stderr)
         return e.code
-    except RuntimeError as e:
+    except Exception as e:  # a failed read or write: report it, never a traceback
         print(f"error: {e}", file=sys.stderr)
         return 1
 

@@ -98,6 +98,21 @@ class RenderCommentTest(unittest.TestCase):
         # c3 is now the worst solo cluster, so it leads its lane.
         self.assertLess(body.index("`src/d.ts:L7-L9`"), body.index("`src/c.ts:L5`"))
 
+    def test_object_and_string_evidence_both_render(self):
+        doc = load("triage.ledger.json")
+        object_evidence = [{"file": "src/a.ts", "lines": [40, 40], "note": "write() result ignored"}]
+        cluster(doc, "c1")["disposition"]["evidence"] = object_evidence  # as escalate records it
+        cluster(doc, "c2")["disposition"]["evidence"] = ["retry(0) makes two attempts"]
+        for level in ("full", "minimal"):
+            with self.subTest(level):
+                source = doc if level == "full" else inflate(doc, 70000)
+                body = render_comment(source, PROTOCOL)
+                brief = body.split("<details>")[0]
+                self.assertNotIn("no evidence recorded", brief)
+                self.assertEqual(cluster(extract_doc(body), "c1")["disposition"]["evidence"], object_evidence)
+                self.assertEqual(cluster(extract_doc(body), "c2")["disposition"]["evidence"],
+                                 ["retry(0) makes two attempts"])
+
     def test_ledger_state_lines(self):
         doc = load("triage.ledger.json")
         body = render_comment(doc, PROTOCOL)
@@ -415,7 +430,10 @@ class ShrinkTest(unittest.TestCase):
         self.assertEqual(minimal["generated_at"], doc["generated_at"])
         self.assertEqual(
             list(minimal["clusters"][0]),
-            ["cluster_id", "member_ids", "quorum", "reviewers", "lane", "escalation", "disposition"])
+            ["cluster_id", "member_ids", "members", "quorum", "reviewers", "lane", "escalation",
+             "disposition"])
+        self.assertEqual(minimal["clusters"][0]["members"],
+                         [{"id": "bugbot-1", "comment_id": 1001}, {"id": "devin-1", "comment_id": 1002}])
         self.assertEqual(minimal["clusters"][0]["escalation"], {
             key: doc["clusters"][0]["escalation"][key]
             for key in ("verdict", "invariant", "chokepoint", "test")})

@@ -5,6 +5,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import contextlib
 import io
 import json
+import tempfile
 import unittest
 from unittest import mock
 
@@ -66,6 +67,20 @@ def comment_writes(client):
 def written_doc(client):
     (_, _, body), = comment_writes(client)
     return extract_doc(body["body"])
+
+
+def truncated_body(doc):
+    """The comment as posted when only the minimal level of `doc` fits."""
+    return "\n".join(render_brief(doc) + render_agent_layer(load_protocol(LEDGER_REF), minimal_doc(doc)))
+
+
+def temp_json(test, data):
+    """Path of a temporary JSON file holding `data`, removed after `test`."""
+    folder = tempfile.TemporaryDirectory()
+    test.addCleanup(folder.cleanup)
+    path = pathlib.Path(folder.name) / "data.json"
+    path.write_text(json.dumps(data))
+    return str(path)
 
 
 def reacted(client):
@@ -145,16 +160,33 @@ class PostPlanTest(unittest.TestCase):
                 got = {c["cluster_id"] for c in doc["clusters"] if c["disposition"].get("stale")}
                 self.assertEqual(got, stale)
 
-    def test_post_plan_over_a_truncated_ledger_warns_and_keeps_plan_at(self):
+    def test_post_plan_over_a_truncated_ledger_carries_dispositions_by_comment_id(self):
         ledger = load("triage.ledger.json")
-        body = "\n".join(render_brief(ledger) + render_agent_layer(load_protocol(LEDGER_REF), minimal_doc(ledger)))
-        client = fake(posted(body))
-        code, _, err = run(["post-plan", "o/r", "7", PLAN, "--no-reactions"], client)
+        del cluster(ledger, "c4")["disposition"]
+        plan = load("triage.json")
+        cluster(plan, "c3")["members"][0]["comment_id"] = 2004  # the finding behind c3 was replaced
+        client = fake(posted(truncated_body(ledger)))
+        code, _, err = run(["post-plan", "o/r", "7", temp_json(self, plan), "--no-reactions"], client)
         self.assertEqual(code, 0, err)
-        self.assertIn("warning: the posted ledger is truncated", err)
+        self.assertNotIn("warning", err)
         doc = written_doc(client)
-        self.assertEqual(doc["timeline"]["plan_at"], ledger["timeline"]["plan_at"])
         self.assertNotIn("truncated", doc)
+        for cid in ("c1", "c2"):
+            self.assertEqual(cluster(doc, cid)["disposition"], cluster(ledger, cid)["disposition"])
+        self.assertEqual(cluster(doc, "c1")["escalation"]["invariant"],
+                         cluster(ledger, "c1")["escalation"]["invariant"])
+        self.assertNotIn("disposition", cluster(doc, "c3"))
+        (orphan,) = doc["orphaned_dispositions"]
+        self.assertEqual((orphan["cluster_id"], orphan["member_comment_ids"]), ("c3", [1004]))
+        self.assertEqual(orphan["disposition"]["verdict"], "deferred")
+        self.assertEqual(doc["timeline"]["plan_at"], ledger["timeline"]["plan_at"])
+
+    def test_post_plan_warns_when_no_prior_disposition_survives(self):
+        client = fake(posted(ledger_body(load("triage.ledger.json"))))
+        with mock.patch("quorum_ledger.inherit", side_effect=lambda new, prior, files: new):
+            code, _, err = run(["post-plan", "o/r", "7", PLAN, "--no-reactions"], client)
+        self.assertEqual(code, 0, err)
+        self.assertIn("warning: none of the 4 dispositions in the posted ledger", err)
 
     def test_post_plan_over_legacy_comment_upgrades_in_place(self):
         legacy = load("triage.json")
@@ -262,6 +294,45 @@ class DisposeTest(unittest.TestCase):
         self.assertEqual(d["at"], "2026-10-29T14:00:00+00:00")
         self.assertEqual(c2["disposition_history"][-1], prior)
 
+    def test_commit_only_refresh_keeps_the_prior_author_and_clears_stale(self):
+        for by, expected in ((None, "owner"), ("ci", "ci")):
+            with self.subTest(by=by):
+                ledger = load("triage.ledger.json")
+                prior = cluster(ledger, "c2")["disposition"]
+                del prior["commit"]
+                prior.update(by="owner", stale=True)
+                client = self.plan_client(ledger)
+                argv = ["dispose", "o/r", "7", "c2", "--commit", "abc1234"] + (["--by", by] if by else [])
+                code, _, err = run(argv, client)
+                self.assertEqual(code, 0, err)
+                d = cluster(written_doc(client), "c2")["disposition"]
+                self.assertEqual((d["by"], d["commit"], d["verdict"]), (expected, "abc1234", "valid"))
+                self.assertNotIn("stale", d)
+
+    def test_dispose_from_file_rejects_disposition_flags(self):
+        source = str(FIXTURES / "dispositions.json")
+        for flag in (["--verdict", "valid"], ["--note", "n"], ["--evidence", "e"], ["--member", "devin-2:valid"],
+                     ["--severity", "major"], ["--commit", "abc1234"], ["--tests", "t"]):
+            with self.subTest(flag[0]):
+                client = self.plan_client()
+                code, _, err = run(["dispose", "o/r", "7", "--from", source] + flag, client)
+                self.assertEqual(code, 2)
+                self.assertIn(flag[0], err)
+                self.assertEqual(writes(client), [])
+
+    def test_a_cluster_listed_twice_gets_one_reply_and_the_last_verdict(self):
+        twice = {"dispositions": [
+            {"cluster_id": "c2", "verdict": "valid", "note": "first look", "evidence": ["e"]},
+            {"cluster_id": "c2", "verdict": "invalid", "note": "second look"},
+        ]}
+        client = self.plan_client()
+        code, _, err = run(["dispose", "o/r", "7", "--from", temp_json(self, twice), "--reply"], client)
+        self.assertEqual(code, 0, err)
+        self.assertEqual(cluster(written_doc(client), "c2")["disposition"]["note"], "second look")
+        replies = [(p, b["body"]) for m, p, b in writes(client) if p.endswith("/replies")]
+        self.assertEqual(replies, [("repos/o/r/pulls/7/comments/1003/replies",
+                                    "**Quorum** · dismissed · second look")])
+
     def test_dispose_commit_only_needs_a_prior_disposition(self):
         client = self.plan_client()
         code, _, err = run(["dispose", "o/r", "7", "c2", "--commit", "abc1234"], client)
@@ -296,7 +367,7 @@ class DisposeTest(unittest.TestCase):
 
     def test_truncated_ledger_needs_scored_to_rebuild(self):
         ledger = load("triage.ledger.json")
-        body = "\n".join(render_brief(ledger) + render_agent_layer(load_protocol(LEDGER_REF), minimal_doc(ledger)))
+        body = truncated_body(ledger)
         argv = ["dispose", "o/r", "7", "c3", "--verdict", "invalid", "--note", "not reproducible"]
 
         client = fake(posted(body))
@@ -354,12 +425,78 @@ class EscalateTest(unittest.TestCase):
         self.assertEqual(d["at"], c1["escalation"]["at"])
         self.assertIn("Invariant: Every write to the pipe", body["body"])
 
+    def test_escalate_pushes_the_prior_disposition_to_history(self):
+        ledger = load("triage.ledger.json")
+        client = fake(posted(ledger_body(ledger)))
+        code, _, err = run(["escalate", "o/r", "7", "c1", "--from", str(FIXTURES / "escalation.json")], client)
+        self.assertEqual(code, 0, err)
+        c1 = cluster(written_doc(client), "c1")
+        self.assertEqual(c1["disposition_history"][-1], cluster(ledger, "c1")["disposition"])
+        self.assertEqual(c1["disposition"]["note"], load("escalation.json")["invariant"])
+
+    def test_escalate_dry_run_makes_no_writes(self):
+        client = fake(posted(ledger_body(load("triage.json"))))
+        code, out, err = run(["escalate", "o/r", "7", "c1", "--from", str(FIXTURES / "escalation.json"),
+                              "--dry-run"], client)
+        self.assertEqual(code, 0, err)
+        self.assertEqual(writes(client), [])
+        self.assertEqual(cluster(extract_doc(out), "c1")["disposition"]["verdict"], "valid")
+
+    def test_escalate_rebuilds_a_truncated_ledger_from_scored(self):
+        ledger = load("triage.ledger.json")
+        argv = ["escalate", "o/r", "7", "c1", "--from", str(FIXTURES / "escalation.json")]
+        client = fake(posted(truncated_body(ledger)))
+        code, _, err = run(argv, client)
+        self.assertEqual(code, 2)
+        self.assertIn("--scored", err)
+        client = fake(posted(truncated_body(ledger)))
+        code, _, err = run(argv + ["--scored", PLAN], client)
+        self.assertEqual(code, 0, err)
+        doc = written_doc(client)
+        self.assertNotIn("truncated", doc)
+        self.assertEqual(cluster(doc, "c1")["escalation"]["siblings"], load("escalation.json")["siblings"])
+        self.assertEqual(cluster(doc, "c2")["disposition"]["verdict"], "valid")
+
+    def test_escalate_reports_an_over_long_invariant(self):
+        source = load("escalation.json")
+        source["invariant"] = "x" * 2001
+        client = fake(posted(ledger_body(load("triage.json"))))
+        code, _, err = run(["escalate", "o/r", "7", "c1", "--from", temp_json(self, source)], client)
+        self.assertEqual(code, 2)
+        self.assertIn("invariant", err)
+        self.assertNotIn("--note", err)
+        self.assertEqual(writes(client), [])
+
+    def test_escalate_takes_agreed_clusters_only(self):
+        plan = load("triage.json")
+        cluster(plan, "c1")["lane"] = "contested"
+        client = fake(posted(ledger_body(plan)))
+        code, _, err = run(["escalate", "o/r", "7", "c1", "--from", str(FIXTURES / "escalation.json")], client)
+        self.assertEqual(code, 2)
+        self.assertIn("agreed", err)
+        self.assertEqual(writes(client), [])
+
     def test_escalate_rejects_solo_cluster(self):
         client = fake(posted(ledger_body(load("triage.json"))))
         code, _, err = run(["escalate", "o/r", "7", "c2", "--from", str(FIXTURES / "escalation.json")], client)
         self.assertEqual(code, 2)
         self.assertIn("solo", err)
         self.assertEqual(writes(client), [])
+
+
+class MainTest(unittest.TestCase):
+    def test_usage_errors_return_2(self):
+        for argv in (["bogus"], ["dispose", "o/r"], ["dispose", "o/r", "7", "c2", "--verdict", "maybe"]):
+            with self.subTest(argv=argv):
+                code, _, err = run(argv, fake())
+                self.assertEqual(code, 2)
+                self.assertIn("usage:", err)
+
+    def test_unexpected_errors_return_1(self):
+        client = FakeClient({("GET", COMMENTS): ValueError("bad JSON from GitHub")})
+        code, out, err = run(["show", "o/r", "7"], client)
+        self.assertEqual(code, 1)
+        self.assertIn("error: bad JSON from GitHub", err)
 
 
 class ShowTest(unittest.TestCase):

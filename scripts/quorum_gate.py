@@ -13,15 +13,15 @@ GATE_RELEVANT = {"critical", "major"}
 OPEN_VERDICTS = {"valid", "partly"}
 
 
-def effective_severity(cluster):
-    """The severity the owner recorded on the latest disposition, else the cluster's own."""
-    return (latest_disposition(cluster) or {}).get("severity") or cluster.get("severity")
-
-
 def live_disposition(cluster):
     """The cluster's latest disposition, or None when it has none or it is stale."""
     d = latest_disposition(cluster)
     return d if d and not d.get("stale") else None
+
+
+def effective_severity(cluster):
+    """The severity the owner recorded on the live disposition, else the cluster's own."""
+    return (live_disposition(cluster) or {}).get("severity") or cluster.get("severity")
 
 
 def is_disposed(cluster):

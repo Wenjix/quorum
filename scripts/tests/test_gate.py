@@ -139,6 +139,11 @@ class GateTest(unittest.TestCase):
         g = compute_gate(doc)
         self.assertEqual((g["blocking"], g["was_blocked_by"]), (["c1", "c3"], 1))
 
+    def test_a_stale_disposition_severity_is_ignored(self):
+        doc = with_disposition(load("triage.json"), "c3", verdict="valid", note="n", stale=True)
+        doc["clusters"][3]["disposition"]["severity"] = "critical"
+        self.assertEqual(effective_severity(doc["clusters"][3]), "minor")
+
     def test_stale_disposition_counts_as_undisposed(self):
         doc = with_disposition(load("triage.json"), "c2", verdict="valid", note="n", commit="x", stale=True)
         doc = with_disposition(doc, "c1", verdict="valid", note="n", commit="y")
