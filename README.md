@@ -30,15 +30,16 @@ For product teams:
 
 Quorum currently has two layers.
 
-1. **Review synthesis skill**
-   - Fetches line-anchored bot review comments from a GitHub PR.
+1. **Review synthesis skill (the triage director)**
+   - Fetches line-anchored review comments from bot accounts on a GitHub PR.
    - Clusters comments that describe the same underlying issue.
-   - Computes reviewer quorum deterministically.
-   - Posts one idempotent synthesis comment back to the PR.
+   - Computes reviewer quorum deterministically and derives each cluster's lane from it: `agreed` when two or more distinct reviewers raised the issue, `solo` otherwise.
+   - Drives the triage with read-only subagents. An `agreed` cluster is presumed real, so it is escalated to a missing invariant, a sibling sweep and a fix brief instead of being re-proved. A `solo` cluster is proved or killed with evidence.
+   - Keeps one PR comment in sync: a human brief on top (a merge gate line instead of a confidence score, then the two lanes) and an agent layer collapsed below it (the triage protocol plus the `quorum/triage@1` JSON). The comment is upserted in place as the PR moves through the plan, validated and fixed states.
 
 2. **Cloud exploration runner**
    - Reads the scored Quorum clusters.
-   - Selects quorum-backed findings, by default `quorum >= 2`.
+   - Selects the `agreed` lane by default (`quorum >= 2`).
    - Runs a small DAG of agents for each selected cluster, on a pluggable backend: Cursor Cloud (default) or Anthropic.
    - Produces root-cause analysis, pattern-sweep results, local artifacts, and an optional PR comment.
    - Renders a live-updating Cursor Canvas of the DAG while agents run.
@@ -47,7 +48,7 @@ The cloud runner is explore-only today. It does not create commits, push branche
 
 ## Example Output
 
-Quorum posts one synthesis comment that groups automated-review findings into distinct issues, shows reviewer quorum, preserves links back to the original bot comments, and embeds machine-readable JSON for follow-up agents.
+Quorum posts one comment that groups automated-review findings into distinct issues, shows reviewer quorum and the merge gate, preserves links back to the original bot comments, and embeds machine-readable JSON for follow-up agents. The screenshot predates the triage brief and shows the earlier synthesis layout.
 
 ![Screenshot of a Quorum review synthesis comment on GitHub, showing three automated-review findings grouped into distinct issues](docs/assets/quorum-synthesis.png)
 
@@ -58,13 +59,13 @@ Bot review comments
         |
         v
 Quorum skill
-  fetch -> cluster -> validate -> score -> post synthesis
+  fetch -> cluster -> validate and score -> post plan -> triage lanes -> record dispositions
         |
         v
-clusters.scored.json
+clusters.scored.json  (quorum/triage@1, also embedded in the PR comment)
         |
         v
-Cloud exploration DAG
+Cloud exploration DAG (agreed lane by default)
   root cause -> pattern sweep -> report
         |
         v
@@ -78,7 +79,7 @@ exploration.md + exploration.json + Canvas + optional PR comment
 - Node.js 22 or newer
 - `npm`
 - `gh` CLI, authenticated for the target GitHub repo
-- `jq` and `python3` for the skill scripts
+- `jq` and `python3` (3.9 or newer) for the skill scripts
 - An exploration backend key for live runs: `CURSOR_API_KEY` (default Cursor Cloud backend) or `ANTHROPIC_API_KEY` (with `--provider anthropic`). An authenticated `gh` or `GITHUB_TOKEN` also lets the Anthropic backend fetch the PR diff for code context; it degrades gracefully without one.
 
 Install dependencies and build:
@@ -126,7 +127,18 @@ Then open an agent session on a PR branch and ask:
 Use Quorum to triage the bot reviews on this PR.
 ```
 
-The skill posts a Quorum synthesis comment that embeds `clusters.scored.json`. The Phase 2 runner can recover that JSON from the PR automatically, so you usually do not need to pass a local `--scored` path.
+The skill walks these steps (the full flow is in `SKILL.md`):
+
+1. **Fetch and count reviewers.** `scripts/fetch_findings.sh OWNER/REPO PR findings.json` normalizes the line-anchored bot comments. If no finding matches, nothing proceeds; if the bot logins are known but missed, set `QUORUM_BOTS`.
+2. **Single-reviewer fast path.** With one distinct reviewer there is nothing to cluster: skip the clustering step and score with `validate_partition.py findings.json --all-singletons`. Every cluster lands in the `solo` lane.
+3. **Cluster.** The agent reads `references/clustering-rubric.md` and writes `clusters.json`. It matches findings and never re-reviews them.
+4. **Validate and score.** `validate_partition.py findings.json clusters.json -o clusters.scored.json [--priors PATH]` checks the partition, computes quorum and the lane in code, and writes the `quorum/triage@1` document. After two failed attempts it falls back to `--all-singletons`.
+5. **Post the plan.** `quorum_ledger.py post-plan OWNER/REPO PR clusters.scored.json` (preview with `--dry-run`) upserts the one PR comment. Tell the skill `--no-comment` (a choice in the skill, not a script flag) to skip this step entirely, typical on a single-reviewer PR. Without a ledger there is nothing for `escalate` and `dispose` to write, so results are reported in conversation instead.
+6. **Drive the triage.** One escalation subagent per `agreed` cluster (prompted with `references/escalation-prompt.md`) and one validator subagent per batch of up to four `solo` clusters (`references/validator-prompt.md`), all read-only and in parallel.
+7. **Record dispositions.** `quorum_ledger.py escalate OWNER/REPO PR CLUSTER_ID --from escalation.json` for an agreed cluster, `quorum_ledger.py dispose OWNER/REPO PR --from dispositions.json --reply` for solo verdicts. A refusal names the offending field and writes nothing.
+8. **Fix, then record the commit.** Fixes are the owner's call. After each one: `quorum_ledger.py dispose OWNER/REPO PR CLUSTER_ID --commit SHA --tests "what ran" --reply`. A declined fix is recorded as `--verdict deferred --note "<their reason>" --by owner`, which stops that cluster holding the merge gate.
+
+`scripts/quorum_ledger.py` is the only script that writes the PR comment, and every write re-renders the whole comment from its embedded JSON. The Phase 2 runner recovers that JSON from the PR automatically, so you usually do not need to pass a local `--scored` path.
 
 You can also run Phase 1 directly from the CLI without the skill:
 
@@ -134,7 +146,15 @@ You can also run Phase 1 directly from the CLI without the skill:
 quorum synthesize OWNER/REPO#123
 ```
 
-This fetches findings, scores clusters deterministically, and upserts the synthesis comment. Add `--dry-run` to preview the comment or `--no-post` to skip posting.
+This fetches findings, scores clusters deterministically (all-singletons unless a `clusters.json` is supplied), and posts the plan through `quorum_ledger.py`. Add `--dry-run` to preview the comment or `--no-post` to skip posting.
+
+To give the skill each reviewer's past precision in a repo, compute priors from the repo's earlier ledgers:
+
+```bash
+quorum priors OWNER/REPO [--out PATH]
+```
+
+The default path is `.quorum/priors/<owner>-<repo>.json`. `post-plan` embeds a priors file younger than a week as `priors`, and a reviewer needs at least five judged findings to get one. A prior says how often a reviewer has been right here; it is never a verdict on the finding in front of you.
 
 ## Use the Cloud Runner
 
@@ -169,6 +189,8 @@ Synthesize and explore in one shot (Phase 1 then Phase 2):
 ```bash
 quorum triage-pr https://github.com/OWNER/REPO/pull/123
 ```
+
+`run-pr`, `post-pr` and `triage-pr` select the `agreed` lane by default. Pass `--min-quorum 1` to take the solo lane too, or `--cluster ID[,ID]` to pick clusters by id. `post-pr` still writes its own `<!-- quorum:exploration -->` comment, separate from the triage comment, until a runner follow-up records the exploration results in the ledger.
 
 ### Choosing a provider
 
@@ -211,7 +233,7 @@ Useful options:
 --provider NAME          Backend: cursor (default) or anthropic.
 --api-key KEY            Override the backend API key.
 --cluster ID[,ID]        Explore specific cluster IDs.
---min-quorum N           Default: 2.
+--min-quorum N           Quorum floor; default selects the agreed lane (quorum >= 2).
 --max-clusters N         Limit selected clusters.
 --scored PATH            Use a local clusters.scored.json instead of PR recovery.
 --out DIR                Write artifacts to a custom directory.
@@ -229,6 +251,8 @@ Useful options:
 ### Utility commands
 
 ```bash
+quorum synthesize OWNER/REPO#PR   Run the Phase 1 pipeline (fetch, score, post plan); all-singletons when no clusters.json is given.
+quorum priors OWNER/REPO [--out PATH]   Compute per-reviewer precision priors from past ledgers in a repo.
 quorum setup                 Check prerequisites, backend keys, and skill install.
 quorum eval [--log-dir DIR]  Summarize past run logs (task outcomes, durations).
 quorum run-dag --dag dag.json --out DIR --repo OWNER/REPO   Run a saved DAG directly.
@@ -236,9 +260,36 @@ quorum run-dag --dag dag.json --out DIR --repo OWNER/REPO   Run a saved DAG dire
 
 ## Outputs
 
+### The triage comment
+
+The skill keeps one PR comment, found by its hidden `<!-- quorum:synthesis -->` marker and updated in place on every write. It has two layers:
+
+- **Human brief.** The merge gate line, a counts line, the `agreed` lane (presumed real, escalated), the `solo` lane (prove or kill), and any clusters the owner deferred. There is no confidence score; the gate is derived from the recorded dispositions.
+- **Agent layer**, collapsed under a `<details>` block. It holds the triage protocol and the `quorum/triage@1` JSON in a fenced `json` block. If the JSON would overflow GitHub's comment limit it is shrunk in steps (member URLs, then siblings, then a minimal document marked `truncated`), and the ledger script rebuilds from a local `--scored` file when it meets a truncated one.
+
+The comment moves through three states, shown in the gate line and the footer timeline (`plan → validated → fixed`):
+
+| State     | Gate line                                    | Meaning                                                                   |
+| --------- | -------------------------------------------- | ------------------------------------------------------------------------- |
+| Plan      | `⏳ Triage pending`                           | Clusters and lanes are posted; no disposition recorded yet.               |
+| Validated | `🛑 Blocked by N issue(s)`                    | Triage has started; critical or major clusters with a `valid` or `partly` verdict and no fixing commit hold the gate, as do those still unreviewed. |
+| Fixed     | `✅ Merge gate clear`                         | Nothing holds the gate; the line names what it was blocked by, the fixing commits and the tests. |
+
+The `quorum/triage@1` block holds the PR and head SHA, totals and per-reviewer counts, the `lanes` (the `agreed` and `solo` cluster ids), per-reviewer `priors` when a fresh priors file exists, and per cluster: its lane, quorum, P-tag, members with links to the original comments, locations, `mechanism_agreement`, the latest `disposition` (verdict, note, evidence, fixing commit, tests, who and when, or `stale: true` when the head moved under it) and, for an agreed cluster, its `escalation` (invariant, sibling sites, chokepoint, test). The derived `gate`, `deferred` and `timeline` are recomputed on every write.
+
+An agent without the Quorum skill can still triage. The protocol embedded in the comment says what each lane needs and how to report through `quorum_ledger.py`, and the scripts come from the tagged tarball:
+
+```bash
+gh api repos/Wenjix/quorum/tarball/v0.3.0 > quorum.tgz && tar -xzf quorum.tgz
+```
+
+Both `scripts/` and `references/` are needed together.
+
+### Exploration run artifacts
+
 Each shortcut run writes artifacts under `.quorum/runs/<repo>-pr<N>-<timestamp>/` by default.
 
-- `input.clusters.scored.json`: the Quorum synthesis input
+- `input.clusters.scored.json`: the scored triage input
 - `dag.json`: the exploration graph
 - `state.json`: task status, model, run ID, agent ID, errors, and parsed results
 - `exploration.json`: structured root-cause and pattern-sweep output
@@ -287,7 +338,11 @@ quorum canvas .quorum/runs/<run-id>
 Quorum treats reviewer consensus as signal, not truth.
 
 - Clustering is conservative: when uncertain, keep findings separate.
-- Quorum is computed in code from distinct reviewers, not by the model.
+- Quorum, and the lane derived from it, is computed in code from distinct reviewers, not by the model.
+- Only comments from Bot-type accounts are ingested, and only when the login matches the reviewer regex: by default `cursor[bot]|copilot|devin|greptile|coderabbit`. Set `QUORUM_BOTS` to override the regex. A human account is never ingested, whatever its login.
+- Ledger comments are trusted only when written by the authenticated `gh` login or by an account with `OWNER`, `MEMBER` or `COLLABORATOR` association, so a forged comment cannot plant dispositions.
+- That trust check does not work under a GitHub App or Actions token. `GET /user` is refused for such a token, and a `[bot]` comment with association `NONE` is not recognised, so a CI run would post a new comment each time instead of updating one. Hosted automation is a later round.
+- The triage subagents make no tracked-file edits. Fixes are the owner's call, and a fix brief is a proposal until the owner says go.
 - Cloud exploration is read-only by prompt and by configuration, on both the Cursor and Anthropic backends.
 - The Cursor runner sets `autoCreatePR: false`; the Anthropic backend only ever sees the PR diff and is instructed never to edit, commit, or push. Neither asks agents to change files.
 - Pattern sweeps classify likely and possible repeats; they do not apply fixes.
@@ -295,12 +350,21 @@ Quorum treats reviewer consensus as signal, not truth.
 ## Repository Layout
 
 ```text
-SKILL.md                 Skill instructions for review synthesis
-quorum.skill             Packaged Claude/Cursor skill
+SKILL.md                 Skill instructions for the triage director
+quorum.skill             Packaged Claude/Cursor skill (scripts and references, without tests)
+scripts/                 Skill scripts (Python 3.9+): fetch, validate_partition, quorum_ledger, priors
+scripts/tests/           Python test suite (not shipped in quorum.skill or the npm tarball)
+references/              Clustering rubric, triage protocol, escalation and validator prompts
 src/                     TypeScript cloud runner
 test/                    Node test suite
 package.json             Build, test, and dependency metadata
 ```
+
+Key skill scripts:
+
+- `scripts/quorum_ledger.py`: the only writer of the PR comment (`post-plan`, `dispose`, `escalate`, `show`)
+- `scripts/validate_partition.py`: partition check, quorum, lanes, and the `quorum/triage@1` document
+- `scripts/quorum_priors.py`: per-reviewer precision priors from past ledgers
 
 Key source modules:
 
@@ -321,7 +385,7 @@ Run type checks:
 npm run typecheck
 ```
 
-Run the full test suite:
+Run the full test suite (builds, then runs the Node tests and the Python suite under `scripts/tests`):
 
 ```bash
 npm test
@@ -343,7 +407,7 @@ node dist/src/cli.js --help
 
 Quorum is built for dogfooding.
 
-It is not yet a hosted GitHub App. The fastest path is still interactive use: run the skill on a PR, inspect the synthesis, then launch cloud exploration for the quorum-backed findings.
+It is not yet a hosted GitHub App. The fastest path is still interactive use: run the skill on a PR, work the two lanes, then launch cloud exploration for the agreed findings.
 
 Planned next steps:
 

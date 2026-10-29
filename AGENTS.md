@@ -18,9 +18,19 @@ Operational guidance for humans and coding agents working in this repo.
 
 Single Node.js/TypeScript CLI — no server, no watch mode.
 
-- Commands: `npm run build` (tsc), `npm test` (builds, then `node --test dist/test/*.test.js`),
+- Commands: `npm run build` (tsc), `npm test` (builds, then `node --test dist/test/*.test.js`, then
+  the python suite under `scripts/tests` with `python3 -m unittest discover -s scripts/tests -v`),
   `npm run typecheck`. `build`/`test` clean `dist/` first (`prebuild`), so stale compiled output
   from a branch switch can't leak into a run.
+- **Skill scripts (`scripts/*.py`):** they must import on Python 3.9, so put
+  `from __future__ import annotations` in any module that uses PEP 604 unions (`X | None`).
+  `scripts/quorum_ledger.py` is the only writer of the PR comment: every other path (the CLI's
+  `synthesize`, the skill, an agent following the embedded protocol) posts through it.
+- `npm run build:skill` rebuilds `quorum.skill` from `SKILL.md`, `scripts/` and `references/`, and strips
+  `scripts/tests` and `__pycache__` from the zip. Rebuild it whenever any of those change. The npm
+  tarball leaves tests out too: the negated `!scripts/tests/` and `!scripts/**/__pycache__/` entries in
+  `package.json` `files` do the work (a root `.npmignore` alone does not override the `files`
+  whitelist), and `.npmignore` repeats them. Check with `npm pack --dry-run`.
 - After editing `src/`, rebuild and invoke with `node dist/src/cli.js <command>` (no `npm link` step).
 - **Offline / no-credentials runs:** `plan-pr <PR-URL>` is plan-only by design — it builds the
   DAG → state → report → Canvas without calling any cloud backend. It still reads the PR's findings from

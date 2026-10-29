@@ -1,0 +1,5 @@
+# Keep the python tests out of the npm tarball. A root .npmignore does not
+# override the `files` whitelist in package.json, which is why package.json
+# also lists these paths as negated `files` entries. Keep the two in step.
+scripts/tests/
+scripts/__pycache__/
