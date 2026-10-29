@@ -12,6 +12,8 @@ special key `paginate: True`, which makes the client follow pagination and
 return the concatenated list. Clients raise `RuntimeError` on a failed call.
 """
 
+from __future__ import annotations
+
 import json
 import os
 import shutil

@@ -37,6 +37,21 @@ class FakeResponse:
         return False
 
 
+SYSTEM_PYTHON = "/usr/bin/python3"  # 3.9 on macOS: the floor the skill scripts must import on
+SCRIPTS_DIR = pathlib.Path(__file__).resolve().parents[1]
+
+
+class ImportFloorTest(unittest.TestCase):
+    @unittest.skipUnless(os.path.exists(SYSTEM_PYTHON), "no system python3")
+    def test_module_imports_on_system_python(self):
+        res = subprocess.run(
+            [SYSTEM_PYTHON, "-I", "-c",
+             f"import sys; sys.path.insert(0, {str(SCRIPTS_DIR)!r}); import quorum_github"],
+            capture_output=True, text=True,
+        )
+        self.assertEqual(res.returncode, 0, res.stderr)
+
+
 class FakeClientTest(unittest.TestCase):
     def test_longest_prefix_wins_and_unmatched_is_none(self):
         c = FakeClient({
