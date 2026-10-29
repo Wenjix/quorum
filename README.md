@@ -127,16 +127,16 @@ Then open an agent session on a PR branch and ask:
 Use Quorum to triage the bot reviews on this PR.
 ```
 
-The skill walks these steps (the full flow is in `SKILL.md`):
+The skill walks these steps (the full flow is in `SKILL.md`). Script and reference paths are relative to the installed skill directory:
 
 1. **Fetch and count reviewers.** `scripts/fetch_findings.sh OWNER/REPO PR findings.json` normalizes the line-anchored bot comments. If no finding matches, nothing proceeds; if the bot logins are known but missed, set `QUORUM_BOTS`.
-2. **Single-reviewer fast path.** With one distinct reviewer there is nothing to cluster: skip the clustering step and score with `validate_partition.py findings.json --all-singletons`. Every cluster lands in the `solo` lane.
+2. **Single-reviewer fast path.** With one distinct reviewer there is nothing to cluster: skip the clustering step and score with `python3 scripts/validate_partition.py findings.json --all-singletons`. Every cluster lands in the `solo` lane.
 3. **Cluster.** The agent reads `references/clustering-rubric.md` and writes `clusters.json`. It matches findings and never re-reviews them.
-4. **Validate and score.** `validate_partition.py findings.json clusters.json -o clusters.scored.json [--priors PATH]` checks the partition, computes quorum and the lane in code, and writes the `quorum/triage@1` document. After two failed attempts it falls back to `--all-singletons`.
-5. **Post the plan.** `quorum_ledger.py post-plan OWNER/REPO PR clusters.scored.json` (preview with `--dry-run`) upserts the one PR comment. Tell the skill `--no-comment` (a choice in the skill, not a script flag) to skip this step entirely, typical on a single-reviewer PR. Without a ledger there is nothing for `escalate` and `dispose` to write, so results are reported in conversation instead.
+4. **Validate and score.** `python3 scripts/validate_partition.py findings.json clusters.json -o clusters.scored.json [--priors PATH]` checks the partition, computes quorum and the lane in code, and writes the `quorum/triage@1` document. After two failed attempts it falls back to `--all-singletons`.
+5. **Post the plan.** `python3 scripts/quorum_ledger.py post-plan OWNER/REPO PR clusters.scored.json` (preview with `--dry-run`) upserts the one PR comment. Tell the skill `--no-comment` (a choice in the skill, not a script flag) to skip this step entirely, typical on a single-reviewer PR. Without a ledger there is nothing for `escalate` and `dispose` to write, so results are reported in conversation instead.
 6. **Drive the triage.** One escalation subagent per `agreed` cluster (prompted with `references/escalation-prompt.md`) and one validator subagent per batch of up to four `solo` clusters (`references/validator-prompt.md`), all read-only and in parallel.
-7. **Record dispositions.** `quorum_ledger.py escalate OWNER/REPO PR CLUSTER_ID --from escalation.json` for an agreed cluster, `quorum_ledger.py dispose OWNER/REPO PR --from dispositions.json --reply` for solo verdicts. A refusal names the offending field and writes nothing.
-8. **Fix, then record the commit.** Fixes are the owner's call. After each one: `quorum_ledger.py dispose OWNER/REPO PR CLUSTER_ID --commit SHA --tests "what ran" --reply`. A declined fix is recorded as `--verdict deferred --note "<their reason>" --by owner`, which stops that cluster holding the merge gate.
+7. **Record dispositions.** `python3 scripts/quorum_ledger.py escalate OWNER/REPO PR CLUSTER_ID --from escalation.json` for an agreed cluster, `python3 scripts/quorum_ledger.py dispose OWNER/REPO PR --from dispositions.json --reply` for solo verdicts. A refusal names the offending field and writes nothing.
+8. **Fix, then record the commit.** Fixes are the owner's call. After each one: `python3 scripts/quorum_ledger.py dispose OWNER/REPO PR CLUSTER_ID --commit SHA --tests "what ran" --reply`. A declined fix is recorded as `--verdict deferred --note "<their reason>" --by owner`, which stops that cluster holding the merge gate.
 
 `scripts/quorum_ledger.py` is the only script that writes the PR comment, and every write re-renders the whole comment from its embedded JSON. The Phase 2 runner recovers that JSON from the PR automatically, so you usually do not need to pass a local `--scored` path.
 
