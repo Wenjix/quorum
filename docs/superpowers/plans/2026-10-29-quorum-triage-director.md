@@ -565,13 +565,13 @@ git commit -m "feat(skill): triage-director instructions with validator and esca
 **Files:**
 - Modify: `src/types.ts`
 - Modify: `src/clusters.ts`
-- Modify: `src/cli.ts:132-138` (selection), `src/cli.ts:397-413` (synthesize post), `src/cli.ts:418-438` (`generateSingletonClusters`), `src/cli.ts:738-790` (help)
+- Modify: `src/cli.ts:132-138` (selection), `src/cli.ts:363-413` (synthesize: singletons and post), `src/cli.ts:418-448` (delete `generateSingletonClusters` and `firstLine`), `src/cli.ts:738-790` (help)
 - Modify: `test/helpers.ts`, `test/clusters.test.ts`, `test/synthesis.test.ts`
 
 **Interfaces:**
 - Produces `src/types.ts`: `ScoredCluster` gains optional `lane?: "agreed" | "solo" | string`, `p_tag?: string`, `disposition?: unknown`, `escalation?: unknown`; `ScoredClustersDoc` gains optional `schema?: string`, `pr?: string`, `head?: string`, `lanes?: { agreed: string[]; solo: string[] }`.
 - Produces `src/clusters.ts`: `selectClusters(doc, options)` where `options.minQuorum` undefined and any cluster has `lane` → select `lane === "agreed"`; `minQuorum` undefined and no lanes → `quorum >= 2`; `minQuorum` given → quorum floor as today.
-- Produces `src/cli.ts`: `executeExplore` passes `minQuorum: optionalNumberFlag(parsed, "min-quorum")`; `synthesizeCommand` runs `python3 scripts/quorum_ledger.py post-plan REPO PR SCORED [--dry-run] [--minimize] [--no-reactions]`; `generateSingletonClusters` uses `finding.stated_severity ?? "minor"`; help text: `--min-quorum N   Quorum floor; default selects the agreed lane (quorum >= 2).`
+- Produces `src/cli.ts`: `executeExplore` passes `minQuorum: optionalNumberFlag(parsed, "min-quorum")`; `synthesizeCommand` passes `--all-singletons` to `validate_partition.py` when no `clusters.json` exists (instead of writing one), and `generateSingletonClusters` and its `firstLine` helper are deleted; `synthesizeCommand` runs `python3 scripts/quorum_ledger.py post-plan REPO PR SCORED [--dry-run] [--minimize] [--no-reactions]`; help text: `--min-quorum N   Quorum floor; default selects the agreed lane (quorum >= 2).`
 - Produces `test/helpers.ts`: `sampleTriageDoc(): ScoredClustersDoc` (schema, lanes, `lane` on each cluster).
 
 - [ ] **Step 1: Write the failing tests**
