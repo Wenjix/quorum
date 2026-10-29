@@ -103,8 +103,10 @@ These would make the work a failure even if it technically runs.
   line, counts, lane rows. Detail lives in the agent layer and the
   original threads.
 - **More than one Quorum comment per PR.** Plan, ledger, and escalation
-  results all live in the one upserted comment. The separate
-  `<!-- quorum:exploration -->` comment is retired.
+  results all live in the one upserted comment. This binds the skill
+  path in this round; the cloud runner's separate
+  `<!-- quorum:exploration -->` comment is retired in the follow-up
+  described in 6.13.
 - **Escalation that re-proves agreed findings** instead of going to the
   class of defect.
 - **Silently losing dispositions** when the PR head moves and clusters
@@ -462,27 +464,33 @@ Owner decision, verbatim: "Correct. The former."
 
 ### 6.13 CLI changes (`src/`)
 
-- `parseScoredClusters` and `recoverScoredClustersFromPullRequest`
-  accept `quorum/triage@1`.
-- `synthesize` renders the new comment through the ledger script.
-- `run-pr`, `post-pr`, `triage-pr`: select by `lane == "agreed"` instead
-  of `--min-quorum`; `--min-quorum` and `--cluster` stay as overrides.
-  `run-pr` stays local-only. `post-pr` writes results into the one
-  comment via `escalate`; the `<!-- quorum:exploration -->` comment is
-  no longer written. When an override selects a `solo` cluster, the DAG
-  runs a new `validate` task type (prove or kill, same output shape as
-  the skill's validator subagent) instead of escalating it, and
-  `post-pr` writes it via `dispose`. Local artifacts, Canvas, and `eval`
-  are unchanged.
-- New `quorum priors OWNER/REPO`: section 9.
+Owner decision, verbatim: "let's go with B". This round changes the
+Node CLI only as far as needed so nothing breaks and the skill path is
+complete. The cloud runner has not been used since June; the
+interactive loop is where the value has been.
 
-**Scope of the runner changes is an open owner decision** (see section
-14). Option A: all of the above in this round. Option B: this round only
-makes the runner read `quorum/triage@1` so nothing breaks, and the
-ledger write-back, the `validate` task, and retiring the exploration
-comment follow once the interactive loop has been dogfooded. The runner
-has not been used since June; the interactive loop is where the value
-has been.
+In this round:
+
+- `parseScoredClusters` and `recoverScoredClustersFromPullRequest`
+  accept `quorum/triage@1` as well as the old shape.
+- `synthesize` renders the new comment through the ledger script.
+- `run-pr`, `post-pr`, `triage-pr` select by `lane == "agreed"` by
+  default; `--min-quorum` and `--cluster` stay as overrides. Their
+  outputs are otherwise unchanged: local artifacts, Canvas, `eval`, and
+  the existing `<!-- quorum:exploration -->` comment from `post-pr`.
+- New `quorum priors OWNER/REPO`: section 9. It is independent of the
+  runner and may be sequenced last.
+
+Deferred to a follow-up after the interactive loop has been dogfooded
+on a few PRs, and listed again in section 10:
+
+- `post-pr` writes escalations into the one comment via `escalate`, and
+  the exploration comment is retired.
+- A `validate` task type in the DAG for solo clusters selected by
+  override, written via `dispose`.
+
+Until then the one-comment rule binds the skill path, which never writes
+a second comment; a `post-pr` run still adds its own.
 
 ## 7. What the human sees, state by state
 
@@ -524,6 +532,9 @@ The ledgers are the dataset; nothing else needs to be stored.
 
 ## 10. Later, explicitly out of this design
 
+- Cloud runner write-back into the ledger, a `validate` DAG task for
+  solo clusters, and retiring the exploration comment (owner chose
+  option B in 6.13).
 - Reading owner replies in bot threads into dispositions, the Greptile
   "Acknowledged by" behaviour. Needs a convention or a model read of
   free text; the ledger schema already has a `by: owner` slot for it.
@@ -590,10 +601,9 @@ The ledgers are the dataset; nothing else needs to be stored.
 | Stated severity parsed from bot markers so fast-path gates are meaningful | agent, after builder check |
 | Ledger script fetched via `gh api` at a pinned tag; this work tags a release | agent, after builder check |
 | Optional `escalation.map` for the invariant map, star fallback | agent, after builder check |
-| Scope of runner changes, option A or B | **owner, open** |
+| Runner scope: option B, schema compatibility only this round | owner ("let's go with B") |
 
 ## 14. Open for the owner
 
-1. Runner scope, section 6.13: option A (full runner update now) or
-   option B (schema compatibility now, write-back later). The agent
-   recommends B.
+Nothing. The runner-scope question was resolved on 2026-10-29 with
+option B.
