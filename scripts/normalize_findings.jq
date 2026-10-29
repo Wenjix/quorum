@@ -5,6 +5,11 @@
 #      -f normalize_findings.jq raw.json
 #
 # Input:  JSON array of review-comment objects (gh api .../pulls/N/comments).
+#         A comment is kept only if its author is a bot account (user.type is
+#         "Bot") AND the login matches $re. The regex is an unanchored
+#         substring match, so the Bot-type requirement is what stops a human
+#         whose login merely contains a bot name (e.g. "devin-fan") from being
+#         ingested as a reviewer finding.
 # Args:   $re    case-insensitive regex matched against the author login
 #         $pr    "OWNER/REPO#N"
 #         $head  PR head commit sha
@@ -61,7 +66,7 @@ def stated(reviewer; body):
     else null
     end;
 
-[ .[] | select(.user.login | test($re; "i")) ]
+[ .[] | select(.user.type == "Bot" and (.user.login | test($re; "i"))) ]
 | sort_by(.path, (.line // .original_line // 0))
 | group_by(.user.login)
 | map(

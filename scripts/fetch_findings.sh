@@ -5,6 +5,8 @@
 # usage: fetch_findings.sh OWNER/REPO PR_NUMBER [OUT=findings.json]
 # env:   QUORUM_BOTS  case-insensitive regex matched against author login
 #                     (default: 'cursor\[bot\]|copilot|devin|greptile|coderabbit')
+#                     Only comments whose author has user.type "Bot" are
+#                     considered, so a human account matching the regex is skipped.
 #
 # Output record (see normalize_findings.jq):
 #   { id, reviewer, login, file, lines:[start,end], outdated,
@@ -45,6 +47,6 @@ jq -r 'group_by(.reviewer)[] | "  \(.[0].reviewer): \(length)"' "$OUT" >&2 || tr
 
 if [[ "$N" -eq 0 ]]; then
   echo "" >&2
-  echo "No findings matched filter '$BOTS_RE'." >&2
+  echo "No findings matched filter '$BOTS_RE' (bot-type accounts only)." >&2
   echo "If review bots did comment, set QUORUM_BOTS to match the author logins listed above and re-run." >&2
 fi
