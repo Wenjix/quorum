@@ -4,7 +4,7 @@ Quorum turns noisy automated PR reviews into one prioritized, explainable review
 
 Modern teams often run several AI reviewers on the same pull request: Cursor Bugbot, GitHub Copilot, Devin Reviewer, CodeRabbit, and others. Each reviewer may catch useful issues, but the result is hard to scan, hard to compare, and hard for follow-up agents to use.
 
-Quorum adds a consensus layer. It groups duplicate findings, highlights where multiple reviewers agree, and can launch cloud agents — Cursor Cloud by default, or Anthropic — to explain root causes and search for similar bug patterns elsewhere in the repository.
+Quorum adds a consensus layer and acts on it. It groups duplicate findings, sorts each issue into a lane by how many reviewers raised it (`agreed` or `solo`), drives the triage of each lane with read-only subagents, and keeps one comment on the PR with a merge gate for humans and a machine-readable ledger for agents. It can also launch cloud agents, on Cursor Cloud or Anthropic, to explain root causes and search for similar bug patterns elsewhere in the repository.
 
 ## Why It Matters
 
@@ -132,7 +132,7 @@ The skill walks these steps (the full flow is in `SKILL.md`). Script and referen
 1. **Fetch and count reviewers.** `scripts/fetch_findings.sh OWNER/REPO PR findings.json` normalizes the line-anchored bot comments. If no finding matches, nothing proceeds; if the bot logins are known but missed, set `QUORUM_BOTS`.
 2. **Single-reviewer fast path.** With one distinct reviewer there is nothing to cluster: skip the clustering step and score with `python3 scripts/validate_partition.py findings.json --all-singletons`. Every cluster lands in the `solo` lane.
 3. **Cluster.** The agent reads `references/clustering-rubric.md` and writes `clusters.json`. It matches findings and never re-reviews them.
-4. **Validate and score.** `python3 scripts/validate_partition.py findings.json clusters.json -o clusters.scored.json [--priors PATH]` checks the partition, computes quorum and the lane in code, and writes the `quorum/triage@1` document. After two failed attempts it falls back to `--all-singletons`.
+4. **Validate and score.** `python3 scripts/validate_partition.py findings.json clusters.json -o clusters.scored.json [--priors PATH]` checks the partition, computes quorum and the lane in code, and writes the `quorum/triage@1` document. If the partition is rejected twice, the agent runs the `--all-singletons` form instead so clustering never blocks the triage.
 5. **Post the plan.** `python3 scripts/quorum_ledger.py post-plan OWNER/REPO PR clusters.scored.json` (preview with `--dry-run`) upserts the one PR comment. Tell the skill `--no-comment` (a choice in the skill, not a script flag) to skip this step entirely, typical on a single-reviewer PR. Without a ledger there is nothing for `escalate` and `dispose` to write, so results are reported in conversation instead.
 6. **Drive the triage.** One escalation subagent per `agreed` cluster (prompted with `references/escalation-prompt.md`) and one validator subagent per batch of up to four `solo` clusters (`references/validator-prompt.md`), all read-only and in parallel.
 7. **Record dispositions.** `python3 scripts/quorum_ledger.py escalate OWNER/REPO PR CLUSTER_ID --from escalation.json` for an agreed cluster, `python3 scripts/quorum_ledger.py dispose OWNER/REPO PR --from dispositions.json --reply` for solo verdicts. A refusal names the offending field and writes nothing.
@@ -300,13 +300,15 @@ The skill keeps one PR comment, found by its hidden `<!-- quorum:synthesis -->` 
 - **Human brief.** The merge gate line, a counts line, the `agreed` lane (presumed real, escalated), the `solo` lane (prove or kill), and any clusters the owner deferred. There is no confidence score; the gate is derived from the recorded dispositions.
 - **Agent layer**, collapsed under a `<details>` block. It holds the triage protocol and the `quorum/triage@1` JSON in a fenced `json` block. If the JSON would overflow GitHub's comment limit it is shrunk in steps (member URLs, then siblings, then a minimal document marked `truncated`), and the ledger script rebuilds from a local `--scored` file when it meets a truncated one.
 
-The comment moves through three states, shown in the gate line and the footer timeline (`plan → validated → fixed`):
+The gate line has three states, derived from the recorded dispositions rather than from a score. Only critical and major clusters are gate-relevant; minor and nit clusters are shown but never hold the gate.
 
-| State     | Gate line                                    | Meaning                                                                   |
-| --------- | -------------------------------------------- | ------------------------------------------------------------------------- |
-| Plan      | `⏳ Triage pending`                           | Clusters and lanes are posted; no disposition recorded yet.               |
-| Validated | `🛑 Blocked by N issue(s)`                    | Triage has started; critical or major clusters with a `valid` or `partly` verdict and no fixing commit hold the gate, as do those still unreviewed. |
-| Fixed     | `✅ Merge gate clear`                         | Nothing holds the gate; the line names what it was blocked by, the fixing commits and the tests. |
+| Gate line                    | When                                                                                                   |
+| ---------------------------- | ------------------------------------------------------------------------------------------------------ |
+| `⏳ Triage pending`           | Clusters and lanes are posted and no disposition has been recorded yet.                                |
+| `🛑 Blocked by N issue(s)`    | Triage has started and a gate-relevant cluster is either still unreviewed or has a `valid` or `partly` verdict without a fixing commit. |
+| `✅ Merge gate clear`         | Every gate-relevant cluster is disposed and none holds the gate: fixed, dismissed as `invalid`, or deferred by the owner. The line names what it was blocked by, the fixing commits and the tests. |
+
+The footer carries a separate timeline of timestamps (`plan → validated → fixed`): when the plan was posted, when the last disposition landed, and when the last fixing commit was recorded.
 
 The `quorum/triage@1` block holds the PR and head SHA, totals and per-reviewer counts, the `lanes` (the `agreed` and `solo` cluster ids), per-reviewer `priors` when a fresh priors file exists, and per cluster: its lane, quorum, P-tag, members with links to the original comments, locations, `mechanism_agreement`, the latest `disposition` (verdict, note, evidence, fixing commit, tests, who and when, or `stale: true` when the head moved under it) and, for an agreed cluster, its `escalation` (invariant, sibling sites, chokepoint, test). The derived `gate`, `deferred` and `timeline` are recomputed on every write.
 
@@ -405,6 +407,9 @@ Key skill scripts:
 Key source modules:
 
 - `src/cli.ts`: command-line interface
+- `src/synthesis.ts`: recovers the `quorum/triage@1` JSON from a trusted ledger comment
+- `src/clusters.ts`: cluster selection (the `agreed` lane by default, or a quorum floor)
+- `src/config.ts`: `quorum auth` credential file
 - `src/dag.ts`: DAG validation, rank computation, and per-provider model defaults
 - `src/runner.ts`: task execution and state persistence
 - `src/canvas.ts`: Cursor Canvas rendering
@@ -449,11 +454,13 @@ node dist/src/cli.js --help
 
 Quorum is built for dogfooding.
 
-It is not yet a hosted GitHub App. The fastest path is still interactive use: run the skill on a PR, work the two lanes, then launch cloud exploration for the agreed findings.
+It is not yet a hosted GitHub App. The fastest path is interactive use: run the skill on a PR, work the two lanes, record the dispositions, and let the ledgers build up each reviewer's priors for the next PR. The design behind the current release is in `docs/superpowers/specs/2026-10-28-quorum-triage-director-design.md`.
 
 Planned next steps:
 
-- Preserve dogfood logs for reviewer precision analysis.
-- Add richer evaluation around bad merges and false positives.
-- Add optional fix-draft agents after the explore-only flow is reliable.
+- Record the cloud runner's root-cause and pattern-sweep results in the ledger, and retire its separate exploration comment.
+- Accept a configured list of trusted logins so a GitHub App or Actions token can find and update the ledger.
+- Read the owner's replies in bot threads into dispositions, so a reply like "won't fix" records a deferral without a script call.
+- Count a reviewer that reviewed and found nothing in the quorum denominator.
+- Add richer evaluation around bad merges and false positives from the dogfood logs and priors.
 - Package hosted automation through GitHub Actions or a GitHub App.
