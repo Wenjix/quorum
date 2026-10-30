@@ -30,12 +30,12 @@
     "node": ">=22.13"
   },
   "dependencies": {
-    "@cursor/sdk": "^1.0.23"
+    "@cursor/sdk": "^1.2.0"
   },
   "overrides": {
-    "undici": "^6.27.0"
+    "zod": "^4.6.7"
   },
-  "overridesNote": "Security pin for @cursor/sdk's transitive undici dependency (npm audit -> 0). Do not remove until upstream no longer resolves a vulnerable undici version. Rationale: docs/dependencies.md (tracked in #5).",
+  "overridesNote": "zod is a peer dependency of @cursor/sdk (declared ^3.25.0 || ^4.0.0); npm auto-installs the 3.x line, which has an open advisory (GHSA-mrhx-c7xc-m3w5, fixed in 4.6.6). The pin selects the patched 4.x the SDK already supports. Remove when the SDK raises its peer floor to >=4.6.6 or drops zod. Rationale: docs/dependencies.md (tracked in #5).",
   "devDependencies": {
     "@types/node": "^25.0.0",
     "typescript": "^6.0.3"

@@ -2,40 +2,26 @@
 
 ## npm `overrides` (security pins)
 
-`@cursor/sdk@1.0.23` still pulls a transitive dependency with `npm audit`
-findings and has no compatible upstream fix yet, so `package.json` pins a
-patched version via `overrides`:
+`@cursor/sdk@1.2.0` has no vulnerable transitive dependency of its own: the
+1.0.x line's `@connectrpc/connect-node` (and with it `undici`), `sqlite3`,
+`tar` and `@tootallnate/once` chains are gone. One pin remains, for a peer
+dependency the SDK declares rather than installs:
 
 | Override | Pinned | Consumer (chain) | Scope / why safe | Remove when |
 |----------|--------|------------------|------------------|-------------|
-| `undici` | `^6.27.0` | `@connectrpc/connect-node@1.7.0` | runtime-inert on Node ≥18 (see below) | `@cursor/sdk` moves to ConnectRPC 2 or otherwise stops resolving vulnerable Undici 5 |
+| `zod` | `^4.6.7` | peer of `@cursor/sdk@1.2.0`, declared `^3.25.0 \|\| ^4.0.0` | the SDK declares support for zod 4; npm would otherwise auto-install the 3.x line, which carries GHSA-mrhx-c7xc-m3w5 (fixed in 4.6.6) | the SDK raises its peer floor to `>=4.6.6`, or drops zod |
 
-`@cursor/sdk@1.0.19` removed its `sqlite3` dependency. At 1.0.23, neither
-`sqlite3` nor its install-time `tar` / `@tootallnate/once` chains are present,
-so their former overrides have been removed.
+Quorum itself never imports `zod`; the pin only chooses which release
+satisfies the SDK's peer range.
 
-**Verified (2026-07):** a clean install resolves `@cursor/sdk@1.0.23`,
-`@connectrpc/connect-node@1.7.0`, and `undici@6.27.0`; `npm ls` contains no
-`sqlite3`, `node-gyp`, `tar`, or `@tootallnate/once`; and
-`npm audit --audit-level=moderate` (against npmjs) reports **0 vulnerabilities**.
-
-### Why `undici` 5→6 is runtime-safe
-`@connectrpc/connect-node@1.7.0`'s only use of `undici` is a `Headers` polyfill
-gated behind `node < 18`:
-
-```js
-const undici_1 = require("undici");
-if (major < 18) {
-  if (typeof globalThis.Headers === "undefined") globalThis.Headers = undici_1.Headers;
-}
-```
-
-This repo requires Node ≥22.13, so that branch never runs (the global `fetch` /
-`Headers` are used). `undici@6` imports cleanly on Node ≥18.17, and nothing else
-consumes it — so the major bump is inert at runtime here.
+**Verified (2026-10-29):** a clean install resolves `@cursor/sdk@1.2.0` and
+`zod@4.6.7`; `npm ls` contains no `@connectrpc/connect-node`, `undici`,
+`sqlite3`, `node-gyp`, `tar` or `@tootallnate/once`; typecheck and the full
+test suite pass; and `npm audit --audit-level=moderate` (against npmjs)
+reports **0 vulnerabilities**.
 
 ### Do not
-- Delete or loosen the Undici override (re-introduces the audit findings).
+- Delete or loosen the `zod` override (re-introduces the advisory).
 - Regenerate `package-lock.json` against `registry.npmmirror.com`.
 
 Removal is tracked in #5.

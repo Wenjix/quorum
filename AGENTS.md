@@ -7,12 +7,12 @@ Operational guidance for humans and coding agents working in this repo.
 - **Registry:** npmjs, pinned in `.npmrc`. Do not switch to
   `registry.npmmirror.com` or commit a lockfile that resolves from it — its
   advisory endpoint returns `NOT_IMPLEMENTED`, so `npm audit` silently can't run.
-- **The `undici` override in `package.json` is an intentional security pin** for
-  `@cursor/sdk`'s transitive `@connectrpc/connect-node@1.7.0` dependency — there
-  is no compatible upstream `@cursor/sdk` fix yet. Do not remove or loosen it,
-  and do not regenerate the lockfile against another registry. The former `tar`
-  and `@tootallnate/once` pins were removed after the SDK dropped `sqlite3`.
-  Rationale, verification, and the remaining removal condition live in
+- **The `zod` override in `package.json` is an intentional security pin.** `zod` is a
+  peer dependency `@cursor/sdk@1.2.0` declares as `^3.25.0 || ^4.0.0`; without the pin npm
+  installs the 3.x line, which carries an open advisory fixed only in 4.6.6. Do not remove or
+  loosen it, and do not regenerate the lockfile against another registry. The former `undici`,
+  `tar` and `@tootallnate/once` pins went away when the SDK dropped `connect-node` and
+  `sqlite3`. Rationale, verification, and the removal condition live in
   `docs/dependencies.md` (tracked in #5).
 - **Auditing:** `npm audit --audit-level=moderate` (npmjs registry required).
 
